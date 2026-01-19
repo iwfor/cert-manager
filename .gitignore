@@ -1,0 +1,27 @@
+# Configuration (contains secrets)
+config.yml
+
+# Ruby
+*.gem
+*.rbc
+.bundle/
+vendor/bundle/
+Gemfile.lock
+
+# Temporary files
+*.log
+*.tmp
+/tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+/live
+/.claude
