@@ -1,0 +1,98 @@
+# CertManager Configuration
+# Copy this file to ~/.config/cert_manager/config.yml and customize
+#
+# Cron job example (runs daily at 2am, quiet mode):
+#   0 2 * * * /path/to/cert_manager.rb --quiet --yes renew
+
+# Email for Let's Encrypt notifications (required)
+email: admin@example.com
+
+# Path to certbot binary (optional, defaults to 'certbot')
+certbot_path: certbot
+
+# Directory where certificates are stored (optional)
+cert_dir: /etc/letsencrypt/live
+
+# Log level: DEBUG, INFO, WARN, ERROR (optional, defaults to INFO)
+log_level: INFO
+
+# Seconds to wait for DNS propagation (optional, defaults to 60)
+# Increase this if you experience validation failures
+propagation_wait: 60
+
+# Default environment: 'production' or 'staging' (optional, defaults to 'production')
+# Staging uses Let's Encrypt test servers - good for testing, no rate limits
+# Production issues real, trusted certificates
+# Can be overridden per-certificate or via CLI flags (--staging / --production)
+environment: production
+
+# DNS Providers
+# Configure one or more DNS providers with their credentials
+dns_providers:
+  # Cloudflare DNS provider
+  # Requires an API token with Zone.DNS edit permissions
+  # Create at: https://dash.cloudflare.com/profile/api-tokens
+  cloudflare_dns:
+    type: cloudflare
+    api_token: your-cloudflare-api-token-here
+    # Optional: specify zone_id to skip automatic zone lookup
+    # zone_id: abc123def456
+
+  # Dreamhost DNS provider
+  # Requires an API key with dns-* permissions
+  # Create at: https://panel.dreamhost.com/index.cgi?tree=home.api
+  dreamhost_dns:
+    type: dreamhost
+    api_key: your-dreamhost-api-key-here
+
+# Certificates to manage
+# Each certificate defines domains, the DNS provider to use, and optional settings
+certificates:
+  # Basic single-domain certificate
+  - name: webserver
+    domains:
+      - www.example.com
+    dns_provider: cloudflare_dns
+
+  # Certificate with multiple domains (SAN)
+  - name: multi-domain
+    domains:
+      - example.com
+      - www.example.com
+      - api.example.com
+    dns_provider: cloudflare_dns
+
+  # Wildcard certificate
+  # Note: Wildcard certs always require DNS validation
+  - name: wildcard
+    domains:
+      - "*.example.com"
+      - example.com
+    dns_provider: cloudflare_dns
+
+  # Internal host using DNS alias
+  # Use this when the domain being certified can't have public DNS records
+  # The ACME challenge is placed at the alias location instead
+  - name: internal-server
+    domains:
+      - server.internal.local
+    dns_provider: cloudflare_dns
+    # Challenge will be at _acme-challenge.acme.example.com
+    # You need a CNAME: _acme-challenge.server.internal.local -> _acme-challenge.acme.example.com
+    dns_alias: _acme-challenge.acme.example.com
+
+  # Certificate using staging environment (test certificates)
+  # Staging has higher rate limits and doesn't issue real certificates
+  # Use 'environment: staging' (preferred) or 'staging: true' (legacy)
+  - name: test-cert
+    domains:
+      - test.example.com
+    dns_provider: dreamhost_dns
+    environment: staging
+
+  # Production certificate (explicit, same as default)
+  - name: production-cert
+    domains:
+      - prod.example.com
+    dns_provider: cloudflare_dns
+    environment: production
