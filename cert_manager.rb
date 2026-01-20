@@ -92,12 +92,13 @@ module CertManager
   class Manager
     attr_reader :environment
 
-    def initialize(config_path: nil, dry_run: false, environment: nil, quiet: false, skip_prompts: false)
+    def initialize(config_path: nil, dry_run: false, environment: nil, quiet: false, skip_prompts: false, verbose: false)
       @config = Config.new(config_path)
       @dry_run = dry_run
       @environment_override = environment
       @quiet = quiet
       @skip_prompts = skip_prompts
+      @verbose = verbose
       @logger = setup_logger
       @providers = DNSProviders.from_config(@config.dns_providers)
     end
@@ -250,13 +251,14 @@ module CertManager
         return
       end
 
-      run_certbot_revoke(cert_path, reason)
+      env = effective_environment(cert_config)
+      run_certbot_revoke(cert_path, reason, env)
       @logger.info("Certificate revoked successfully")
     end
 
     private
 
-    def run_certbot_revoke(cert_path, reason)
+    def run_certbot_revoke(cert_path, reason, environment)
       cmd = [
         @config.certbot_path,
         'revoke',
@@ -274,7 +276,19 @@ module CertManager
         cmd += ['--reason', reason]
       end
 
-      @logger.debug("Running: #{cmd.join(' ')}")
+      # Set ACME server based on environment
+      if environment == :staging
+        cmd += ['--server', ACME_SERVERS[:staging]]
+      else
+        cmd += ['--server', ACME_SERVERS[:production]]
+      end
+
+      # Echo command in verbose mode
+      if @verbose
+        puts "Certbot command:"
+        puts "  #{cmd.join(' ')}"
+        puts ""
+      end
 
       unless system(*cmd)
         raise "Certbot revoke command failed with exit code: #{$?.exitstatus}"
@@ -391,7 +405,12 @@ module CertManager
         cmd += ['--server', ACME_SERVERS[:production]]
       end
 
-      @logger.debug("Running: #{cmd.join(' ')}")
+      # Echo command in verbose mode
+      if @verbose
+        puts "Certbot command:"
+        puts "  #{cmd.join(' ')}"
+        puts ""
+      end
 
       # Set environment for hooks
       env = {
@@ -746,7 +765,8 @@ if __FILE__ == $PROGRAM_NAME
         dry_run: options[:dry_run],
         environment: options[:environment],
         quiet: options[:quiet],
-        skip_prompts: options[:yes]
+        skip_prompts: options[:yes],
+        verbose: options[:verbose]
       )
       manager.request(cert_name)
     rescue StandardError => e
@@ -763,7 +783,8 @@ if __FILE__ == $PROGRAM_NAME
         dry_run: options[:dry_run],
         environment: options[:environment],
         quiet: options[:quiet],
-        skip_prompts: options[:yes]
+        skip_prompts: options[:yes],
+        verbose: options[:verbose]
       )
       manager.renew(cert_name: cert_name, force: options[:force])
     rescue StandardError => e
@@ -783,8 +804,10 @@ if __FILE__ == $PROGRAM_NAME
       manager = CertManager::Manager.new(
         config_path: options[:config],
         dry_run: options[:dry_run],
+        environment: options[:environment],
         quiet: options[:quiet],
-        skip_prompts: options[:yes]
+        skip_prompts: options[:yes],
+        verbose: options[:verbose]
       )
       manager.revoke(cert_name, reason: options[:reason])
     rescue StandardError => e
@@ -803,7 +826,8 @@ if __FILE__ == $PROGRAM_NAME
     begin
       manager = CertManager::Manager.new(
         config_path: options[:config],
-        quiet: options[:quiet]
+        quiet: options[:quiet],
+        verbose: options[:verbose]
       )
       manager.cleanup(cert_name)
     rescue StandardError => e
@@ -815,7 +839,8 @@ if __FILE__ == $PROGRAM_NAME
     begin
       manager = CertManager::Manager.new(
         config_path: options[:config],
-        environment: options[:environment]
+        environment: options[:environment],
+        verbose: options[:verbose]
       )
       manager.print_environment_info
       manager.list
@@ -826,7 +851,10 @@ if __FILE__ == $PROGRAM_NAME
 
   when 'verify'
     begin
-      manager = CertManager::Manager.new(config_path: options[:config])
+      manager = CertManager::Manager.new(
+        config_path: options[:config],
+        verbose: options[:verbose]
+      )
       manager.verify_providers
     rescue StandardError => e
       puts "Error: #{e.message}"
