@@ -266,6 +266,7 @@ module CertManager
         '--config-dir', @config.config_dir,
         '--work-dir', @config.work_dir,
         '--logs-dir', @config.logs_dir,
+        '--agree-tos',
         '--non-interactive'
       ]
 
