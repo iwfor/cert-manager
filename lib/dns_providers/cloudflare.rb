@@ -53,10 +53,14 @@ module CertManager
         request = Net::HTTP::Post.new(uri)
         set_auth_headers(request)
         request['Content-Type'] = 'application/json'
+
+        # TXT record content must be quoted
+        quoted_value = value.start_with?('"') ? value : "\"#{value}\""
+
         request.body = {
           type: 'TXT',
           name: record_name,
-          content: value,
+          content: quoted_value,
           ttl: 120,
           comment: 'ACME DNS-01 challenge - managed by CertManager'
         }.to_json

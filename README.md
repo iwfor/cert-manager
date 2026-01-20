@@ -58,6 +58,26 @@ For internal hosts that can't have public DNS records, use a DNS alias:
     dns_alias: _acme-challenge.acme.example.com
 ```
 
+To reuse the existing private key on renewal (useful for DANE/TLSA or key pinning):
+
+```yaml
+  - name: pinned-server
+    domains:
+      - server.example.com
+    dns_provider: cloudflare
+    reuse_key: true
+```
+
+### Custom directories
+
+By default, certificates are stored in `~/.local/share/certbot` (no root required). To customize:
+
+```yaml
+config_dir: /path/to/certbot/config   # certificates in config_dir/live
+work_dir: /path/to/certbot/work
+logs_dir: /path/to/certbot/logs
+```
+
 ## Requesting Certificates
 
 ### 1. Test with staging first
@@ -106,9 +126,37 @@ Flags:
 ### Manual renewal
 
 ```bash
-./cert_manager.rb renew           # Renew certificates due for renewal
-./cert_manager.rb --force renew   # Force renew all certificates
+./cert_manager.rb renew              # Renew all certificates due for renewal
+./cert_manager.rb renew myserver     # Renew specific certificate if due
+./cert_manager.rb --force renew      # Force renew all certificates
+./cert_manager.rb --force renew myserver  # Force renew specific certificate
 ```
+
+## Revoking Certificates
+
+To revoke a certificate (e.g., if the private key was compromised):
+
+```bash
+./cert_manager.rb revoke myserver
+```
+
+Optionally specify a reason:
+
+```bash
+./cert_manager.rb revoke myserver --reason keycompromise
+```
+
+Valid reasons: `unspecified`, `keycompromise`, `affiliationchanged`, `superseded`, `cessationofoperation`
+
+## Cleaning Up DNS Records
+
+If a certificate request fails or is interrupted, ACME challenge TXT records may be left in DNS. To remove them:
+
+```bash
+./cert_manager.rb cleanup myserver
+```
+
+This finds and removes all `_acme-challenge` TXT records for the certificate's domains.
 
 ## CLI Reference
 
@@ -117,7 +165,9 @@ Usage: cert_manager.rb [options] <command>
 
 Commands:
   request <name>    Request a new certificate
-  renew             Renew certificates due for renewal
+  renew [name]      Renew certificate(s) due for renewal
+  revoke <name>     Revoke a certificate
+  cleanup <name>    Remove leftover ACME challenge DNS records
   list              List all configured certificates
   verify            Verify DNS provider credentials
   init              Create sample configuration file
@@ -128,6 +178,7 @@ Options:
   -p, --production     Use production environment (real certificates)
   -n, --dry-run        Preview without making changes
   -f, --force          Force renewal even if not due
+  -r, --reason REASON  Revocation reason (for revoke command)
   -q, --quiet          Quiet mode (errors only)
   -y, --yes            Skip confirmation prompts
   -h, --help           Show help

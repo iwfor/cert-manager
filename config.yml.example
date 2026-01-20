@@ -10,8 +10,11 @@ email: admin@example.com
 # Path to certbot binary (optional, defaults to 'certbot')
 certbot_path: certbot
 
-# Directory where certificates are stored (optional)
-cert_dir: /etc/letsencrypt/live
+# Certbot directory configuration (all default to ~/.local/share/certbot)
+# These avoid needing root access to /etc/letsencrypt
+# config_dir: ~/.local/share/certbot        # certificates stored in config_dir/live
+# work_dir: ~/.local/share/certbot/work     # certbot working directory
+# logs_dir: ~/.local/share/certbot/logs     # certbot log files
 
 # Log level: DEBUG, INFO, WARN, ERROR (optional, defaults to INFO)
 log_level: INFO
@@ -96,3 +99,11 @@ certificates:
       - prod.example.com
     dns_provider: cloudflare_dns
     environment: production
+
+  # Certificate that reuses existing private key on renewal
+  # Useful for HPKP, DANE/TLSA, or when key continuity is required
+  - name: pinned-cert
+    domains:
+      - pinned.example.com
+    dns_provider: cloudflare_dns
+    reuse_key: true
