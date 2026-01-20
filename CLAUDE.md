@@ -7,6 +7,9 @@ Let's Encrypt Cert Manager
 * DNS based authorization for `certbot`, supporting:
     * Cloudflare DNS API
     * Dreamhost DNS API
+    * Google CloudDNS
+    * AWS Route 53
+    * DNS Made Easy
 * Support DNS aliases in requests
 * Support both staging and production certificates
     * Encourage user to create a staging certificate before switching to production

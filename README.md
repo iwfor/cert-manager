@@ -5,7 +5,12 @@ A Ruby tool for managing Let's Encrypt certificates for internal hosts using DNS
 ## Features
 
 - DNS-01 challenge validation (works for internal/private hosts)
-- Cloudflare and Dreamhost DNS API support
+- Multiple DNS provider support:
+  - Cloudflare
+  - Dreamhost
+  - AWS Route 53
+  - GCP Cloud DNS
+  - DNS Made Easy
 - DNS alias support for hosts without public DNS
 - Staging and production environments
 - Cron-friendly for automated renewals
@@ -209,3 +214,61 @@ Options:
        type: dreamhost
        api_key: your-key
    ```
+
+### AWS Route 53
+
+1. Install the AWS SDK: `gem install aws-sdk-route53`
+2. Get your Hosted Zone ID from the Route 53 console
+3. Create an IAM user/role with `route53:ChangeResourceRecordSets` and `route53:ListResourceRecordSets` permissions
+4. Add to config:
+   ```yaml
+   dns_providers:
+     route53:
+       type: route53
+       hosted_zone_id: Z1234567890ABC
+       # Optional: explicit credentials
+       access_key_id: AKIAIOSFODNN7EXAMPLE
+       secret_access_key: your-secret-key
+   ```
+
+If you don't provide credentials, the AWS SDK will use the standard credential chain:
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+- Shared credentials file (`~/.aws/credentials`)
+- IAM role (on EC2/ECS/Lambda)
+
+### GCP Cloud DNS
+
+1. Install the Google Cloud SDK: `gem install google-apis-dns_v1 googleauth`
+2. Create a Cloud DNS managed zone or note your existing zone name
+3. Create a service account with **DNS Administrator** role
+4. Add to config:
+   ```yaml
+   dns_providers:
+     gcp_dns:
+       type: cloud_dns
+       project_id: my-project-123
+       managed_zone: my-zone-name
+       # Optional: path to service account key
+       credentials_file: /path/to/service-account.json
+   ```
+
+If you don't provide `credentials_file`, the SDK uses Application Default Credentials:
+- `GOOGLE_APPLICATION_CREDENTIALS` environment variable
+- Default service account (on GCE/GKE/Cloud Run)
+- User credentials from `gcloud auth application-default login`
+
+### DNS Made Easy
+
+1. Log in to your DNS Made Easy account
+2. Go to **Account** → **API Credentials**
+3. Generate an API key and Secret key
+4. Add to config:
+   ```yaml
+   dns_providers:
+     dnsmadeeasy:
+       type: dnsmadeeasy
+       api_key: your-api-key
+       secret_key: your-secret-key
+   ```
+
+Optional: Use `sandbox: true` to test against the DNS Made Easy sandbox environment.

@@ -628,6 +628,26 @@ module CertManager
           type: dreamhost
           api_key: your-dreamhost-api-key
 
+        # AWS Route 53 example (requires: gem install aws-sdk-route53)
+        # route53_main:
+        #   type: route53
+        #   hosted_zone_id: Z1234567890ABC
+        #   access_key_id: AKIAIOSFODNN7EXAMPLE      # optional, uses AWS credential chain
+        #   secret_access_key: your-secret-key       # optional
+
+        # GCP Cloud DNS example (requires: gem install google-apis-dns_v1 googleauth)
+        # gcp_dns:
+        #   type: cloud_dns
+        #   project_id: my-project-123
+        #   managed_zone: my-zone-name
+        #   credentials_file: /path/to/service-account.json  # optional, uses ADC
+
+        # DNS Made Easy example
+        # dnsmadeeasy_dns:
+        #   type: dnsmadeeasy
+        #   api_key: your-api-key
+        #   secret_key: your-secret-key
+
       # Certificates to manage
       certificates:
         # Production certificate (uses default environment)

@@ -48,6 +48,36 @@ dns_providers:
     type: dreamhost
     api_key: your-dreamhost-api-key-here
 
+  # AWS Route 53 DNS provider
+  # Requires: gem install aws-sdk-route53
+  # Get hosted_zone_id from Route 53 console
+  route53_dns:
+    type: route53
+    hosted_zone_id: Z1234567890ABC
+    # Optional: explicit credentials (otherwise uses AWS credential chain)
+    # access_key_id: AKIAIOSFODNN7EXAMPLE
+    # secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    # region: us-east-1
+
+  # GCP Cloud DNS provider
+  # Requires: gem install google-apis-dns_v1 googleauth
+  # Get managed_zone name from Cloud DNS console
+  gcp_dns:
+    type: cloud_dns
+    project_id: my-gcp-project-123
+    managed_zone: my-zone-name
+    # Optional: path to service account JSON key file
+    # If not provided, uses Application Default Credentials
+    # credentials_file: /path/to/service-account.json
+
+  # DNS Made Easy provider
+  # Get API credentials from https://dnsmadeeasy.com/ account settings
+  dnsmadeeasy_dns:
+    type: dnsmadeeasy
+    api_key: your-api-key
+    secret_key: your-secret-key
+    # sandbox: true  # Use sandbox API for testing
+
 # Certificates to manage
 # Each certificate defines domains, the DNS provider to use, and optional settings
 certificates:

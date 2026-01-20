@@ -33,6 +33,9 @@
 require_relative 'dns_providers/base'
 require_relative 'dns_providers/cloudflare'
 require_relative 'dns_providers/dreamhost'
+require_relative 'dns_providers/route53'
+require_relative 'dns_providers/cloud_dns'
+require_relative 'dns_providers/dnsmadeeasy'
 
 module CertManager
   module DNSProviders
@@ -134,5 +137,8 @@ module CertManager
     # Auto-register built-in providers
     register(Cloudflare)
     register(Dreamhost)
+    register(Route53)
+    register(CloudDNS)
+    register(DNSMadeEasy)
   end
 end
