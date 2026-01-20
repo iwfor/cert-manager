@@ -45,13 +45,15 @@ module CertManager
       # @param value [String] The challenge token value
       # @return [Hash] Record identifier containing name and value for removal
       def add_txt_record(domain, record_name, value)
+        # Store original value for the record ID (before any quoting)
+        original_value = value
+
         params = {
           key: @api_key,
           cmd: 'dns-add_record',
           record: record_name,
           type: 'TXT',
           value: value,
-          comment: 'ACME DNS-01 challenge',
           format: 'json'
         }
 
@@ -63,7 +65,8 @@ module CertManager
         end
 
         # Dreamhost doesn't return an ID, return composite identifier
-        { record_name: record_name, value: value }.to_json
+        # Use original value for removal
+        { record_name: record_name, value: original_value }.to_json
       end
 
       # Remove a TXT record via Dreamhost API
@@ -175,12 +178,14 @@ module CertManager
 
       def parse_response(response)
         unless response.is_a?(Net::HTTPSuccess)
-          raise DNSProviderError, "Dreamhost API HTTP error: #{response.code}"
+          raise DNSProviderError, "Dreamhost API HTTP error: #{response.code} - #{response.body}"
         end
 
-        JSON.parse(response.body)
-      rescue JSON::ParserError => e
-        raise DNSProviderError, "Dreamhost API returned invalid JSON: #{e.message}"
+        begin
+          JSON.parse(response.body)
+        rescue JSON::ParserError => e
+          raise DNSProviderError, "Dreamhost API returned invalid JSON: #{e.message}\nBody: #{response.body[0..500]}"
+        end
       end
 
       def parse_record_id(record_id, fallback_value)
