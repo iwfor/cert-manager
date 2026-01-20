@@ -654,7 +654,8 @@ if __FILE__ == $PROGRAM_NAME
     force: false,
     environment: nil,
     quiet: false,
-    yes: false
+    yes: false,
+    verbose: false
   }
 
   parser = OptionParser.new do |opts|
@@ -703,7 +704,11 @@ if __FILE__ == $PROGRAM_NAME
       options[:reason] = reason
     end
 
-    opts.on('-v', '--version', 'Show version') do
+    opts.on('-v', '--verbose', 'Enable verbose output') do
+      options[:verbose] = true
+    end
+
+    opts.on('-V', '--version', 'Show version') do
       puts "CertManager v#{CertManager::VERSION}"
       exit
     end
