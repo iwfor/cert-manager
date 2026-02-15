@@ -278,3 +278,7 @@ If you don't provide `credentials_file`, the SDK uses Application Default Creden
    ```
 
 Optional: Use `sandbox: true` to test against the DNS Made Easy sandbox environment.
+
+---
+
+Built with the assistance of AI (Claude by Anthropic).
