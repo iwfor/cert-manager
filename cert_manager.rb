@@ -35,6 +35,7 @@ module CertManager
       File.join(@config_dir, 'live')
     end
 
+    # @param path [String, nil] Path to config file, defaults to DEFAULT_CONFIG_PATH
     def initialize(path = nil)
       @path = path || DEFAULT_CONFIG_PATH
       load_config
@@ -42,6 +43,8 @@ module CertManager
 
     private
 
+    # Load and parse the YAML configuration file
+    # @raise [ConfigError] If the file is missing or invalid
     def load_config
       unless File.exist?(@path)
         raise ConfigError, "Configuration file not found: #{@path}\n" \
@@ -68,6 +71,8 @@ module CertManager
       validate_config
     end
 
+    # Validate that configured certificates reference valid providers and domains
+    # @raise [ConfigError] If validation fails
     def validate_config
       if @certificates.any? && @dns_providers.empty?
         raise ConfigError, "No DNS providers configured"
@@ -95,6 +100,10 @@ module CertManager
       'apache' => 'apache2'
     }.freeze
 
+    # Validate deploy target configuration for a certificate
+    # @param cert_name [String] Certificate name for error messages
+    # @param deploy_targets [Array<Hash>] List of deploy target configurations
+    # @raise [ConfigError] If any target is misconfigured
     def validate_deploy_config(cert_name, deploy_targets)
       unless deploy_targets.is_a?(Array)
         raise ConfigError, "Certificate '#{cert_name}': deploy must be a list of targets"
@@ -134,6 +143,12 @@ module CertManager
   class Manager
     attr_reader :environment
 
+    # @param config_path [String, nil] Path to config file
+    # @param dry_run [Boolean] If true, show what would be done without making changes
+    # @param environment [Symbol, nil] Environment override (:staging or :production)
+    # @param quiet [Boolean] If true, suppress info-level log output
+    # @param skip_prompts [Boolean] If true, skip interactive confirmation prompts
+    # @param verbose [Boolean] If true, show extra detail such as certbot commands
     def initialize(config_path: nil, dry_run: false, environment: nil, quiet: false, skip_prompts: false, verbose: false)
       @config = Config.new(config_path)
       @dry_run = dry_run
@@ -360,6 +375,10 @@ module CertManager
 
     private
 
+    # Run certbot revoke for a certificate
+    # @param cert_path [String] Path to the certificate PEM file
+    # @param reason [String, nil] Revocation reason (e.g. 'keycompromise', 'superseded')
+    # @param environment [Symbol] :staging or :production
     def run_certbot_revoke(cert_path, reason, environment)
       cmd = [
         @config.certbot_path,
@@ -398,6 +417,8 @@ module CertManager
       end
     end
 
+    # Initialize the logger with level based on config and quiet mode
+    # @return [Logger]
     def setup_logger
       logger = Logger.new($stdout)
       # In quiet mode, only show warnings and errors
@@ -412,14 +433,23 @@ module CertManager
       logger
     end
 
+    # Return the display name for a certificate config
+    # @param cert_config [Hash] Certificate configuration hash
+    # @return [String] The cert name or first domain
     def cert_name_for(cert_config)
       cert_config['name'] || cert_config['domains'].first
     end
 
+    # Calculate fractional days remaining until an expiry time
+    # @param expiry [Time] Certificate expiry time
+    # @return [Float] Days until expiry (negative if expired)
     def days_until_expiry(expiry)
       (expiry - Time.now) / 86400
     end
 
+    # Return the shared Ruby code preamble used by certbot hook scripts
+    # to load config and instantiate the DNS provider
+    # @return [String] Ruby source code fragment
     def hook_script_preamble
       <<~'RUBY'
         config = YAML.safe_load(File.read(ENV["CERT_MANAGER_CONFIG"]))
@@ -432,12 +462,17 @@ module CertManager
       RUBY
     end
 
+    # Look up a certificate config by name or primary domain
+    # @param name [String] Certificate name or domain to find
+    # @return [Hash, nil] The matching certificate config, or nil
     def find_certificate(name)
       @config.certificates.find do |c|
         c['name'] == name || c['domains'].first == name
       end
     end
 
+    # Request a new certificate via certbot, with staging prompt and deploy
+    # @param cert_config [Hash] Certificate configuration hash
     def request_certificate(cert_config)
       domains = cert_config['domains']
       provider_name = cert_config['dns_provider']
@@ -487,12 +522,21 @@ module CertManager
       run_certbot_with_hooks(domains, provider, dns_alias, cert_config, env)
     end
 
+    # Check whether a certificate PEM file exists on disk
+    # @param cert_config [Hash] Certificate configuration hash
+    # @return [Boolean]
     def certificate_exists?(cert_config)
       cert_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, cert_name, 'cert.pem')
       File.exist?(cert_path)
     end
 
+    # Build and execute the certbot certonly command with DNS auth/cleanup hooks
+    # @param domains [Array<String>] Domains to include in the certificate
+    # @param provider [CertManager::DNSProviders::Base] DNS provider instance
+    # @param dns_alias [String, nil] Optional DNS alias for ACME challenge records
+    # @param cert_config [Hash] Certificate configuration hash
+    # @param environment [Symbol] :staging or :production
     def run_certbot_with_hooks(domains, provider, dns_alias, cert_config, environment)
       # Ensure directories exist
       ensure_directories_exist
@@ -555,6 +599,10 @@ module CertManager
       @logger.info("Certificate obtained successfully!")
     end
 
+    # Generate the certbot manual auth hook script that adds DNS TXT records
+    # @param provider [CertManager::DNSProviders::Base] DNS provider instance
+    # @param dns_alias [String, nil] Optional DNS alias for challenge records
+    # @return [String] Path to the generated temporary script
     def auth_hook_script(provider, dns_alias)
       lib_path = File.expand_path('lib/dns_providers', __dir__)
       preamble = hook_script_preamble
@@ -590,6 +638,10 @@ module CertManager
       write_temp_script('auth_hook.rb', script)
     end
 
+    # Generate the certbot manual cleanup hook script that removes DNS TXT records
+    # @param provider [CertManager::DNSProviders::Base] DNS provider instance
+    # @param dns_alias [String, nil] Optional DNS alias for challenge records
+    # @return [String] Path to the generated temporary script
     def cleanup_hook_script(provider, dns_alias)
       lib_path = File.expand_path('lib/dns_providers', __dir__)
       preamble = hook_script_preamble
@@ -624,6 +676,10 @@ module CertManager
       write_temp_script('cleanup_hook.rb', script)
     end
 
+    # Write a temporary executable script file
+    # @param name [String] Base name for the script
+    # @param content [String] Script content
+    # @return [String] Path to the created script
     def write_temp_script(name, content)
       path = "/tmp/cert_manager_#{name}_#{$$}"
       File.write(path, content)
@@ -631,6 +687,7 @@ module CertManager
       path
     end
 
+    # Create certbot config, work, and log directories if they don't exist
     def ensure_directories_exist
       [@config.config_dir, @config.work_dir, @config.logs_dir].each do |dir|
         FileUtils.mkdir_p(dir) unless File.exist?(dir)
@@ -645,6 +702,9 @@ module CertManager
       target['service_name'] || Config::DEFAULT_SERVICE_NAMES[target['service']] || target['service']
     end
 
+    # Deploy a certificate to all configured targets, logging dry-run info or
+    # recording failures for later retry
+    # @param cert_config [Hash] Certificate configuration hash
     def deploy_certificate(cert_config)
       cert_name = cert_name_for(cert_config)
 
@@ -699,6 +759,10 @@ module CertManager
       end
     end
 
+    # Deploy certificate files to a single target (local or remote)
+    # @param cert_name [String] Certificate name (used to locate cert files)
+    # @param target [Hash] Deploy target configuration
+    # @return [Boolean] true on success
     def deploy_single_target(cert_name, target)
       cert_dir = File.join(@config.cert_dir, cert_name)
       path = target['path']
@@ -718,6 +782,15 @@ module CertManager
       true
     end
 
+    # Deploy certificate files locally via cp and optional systemctl reload/restart
+    # @param cert_dir [String] Directory containing cert PEM files
+    # @param path [String] Destination path for the fullchain certificate
+    # @param key_path [String, nil] Optional separate destination for the private key
+    # @param append_key [Boolean, nil] If true, append private key to the cert file
+    # @param unit [String, nil] Systemctl unit name to reload/restart
+    # @param action [String] 'reload' or 'restart'
+    # @param sudo [String] 'sudo ' prefix or empty string
+    # @param custom_command [String, nil] Optional post-deploy command to run
     def deploy_local(cert_dir, path, key_path, append_key, unit, action, sudo, custom_command)
       @logger.info("Deploying certificate locally to #{path}")
       run_deploy_cmd(
@@ -758,6 +831,16 @@ module CertManager
       end
     end
 
+    # Deploy certificate files to a remote host via scp/ssh
+    # @param cert_dir [String] Directory containing cert PEM files
+    # @param target [Hash] Deploy target config (must include 'user' and 'host')
+    # @param path [String] Remote destination path for the fullchain certificate
+    # @param key_path [String, nil] Optional separate remote destination for the private key
+    # @param append_key [Boolean, nil] If true, append private key to the cert file
+    # @param unit [String, nil] Systemctl unit name to reload/restart on remote
+    # @param action [String] 'reload' or 'restart'
+    # @param sudo [String] 'sudo ' prefix or empty string
+    # @param custom_command [String, nil] Optional post-deploy command to run on remote
     def deploy_remote(cert_dir, target, path, key_path, append_key, unit, action, sudo, custom_command)
       user = target['user']
       host = target['host']
@@ -822,6 +905,10 @@ module CertManager
       end
     end
 
+    # Execute a deploy command, raising on failure
+    # @param cmd [Array<String>] Command and arguments
+    # @param error_message [String] Error message prefix if command fails
+    # @raise [RuntimeError] If the command exits with a non-zero status
     def run_deploy_cmd(cmd, error_message)
       puts "Deploy command: #{cmd.join(' ')}" if @verbose
       unless system(*cmd)
@@ -829,10 +916,14 @@ module CertManager
       end
     end
 
+    # Path to the JSON file tracking pending/failed deploys
+    # @return [String]
     def deploy_state_path
       File.join(@config.config_dir, 'deploy_state.json')
     end
 
+    # Load the deploy state from disk, returning a default if missing or corrupt
+    # @return [Hash] State hash with 'pending_deploys' key
     def load_deploy_state
       return { 'pending_deploys' => [] } unless File.exist?(deploy_state_path)
 
@@ -844,14 +935,23 @@ module CertManager
       { 'pending_deploys' => [] }
     end
 
+    # Persist the deploy state hash to disk as pretty-printed JSON
+    # @param state [Hash] State hash to save
     def save_deploy_state(state)
       File.write(deploy_state_path, JSON.pretty_generate(state))
     end
 
+    # Return a unique host identifier for a deploy target ('localhost' or hostname)
+    # @param target [Hash] Deploy target configuration
+    # @return [String]
     def deploy_host_key(target)
       target['local'] ? 'localhost' : target['host']
     end
 
+    # Record a failed deploy in the state file for later retry
+    # @param cert_name [String] Certificate name
+    # @param target [Hash] Deploy target configuration
+    # @param error_message [String] Error description
     def record_failed_deploy(cert_name, target, error_message)
       state = load_deploy_state
       pending = state['pending_deploys']
@@ -874,6 +974,9 @@ module CertManager
       save_deploy_state(state)
     end
 
+    # Remove a successfully completed deploy from the pending state
+    # @param cert_name [String] Certificate name
+    # @param target [Hash] Deploy target configuration
     def clear_pending_deploy(cert_name, target)
       state = load_deploy_state
       host_key = deploy_host_key(target)
@@ -881,6 +984,10 @@ module CertManager
       save_deploy_state(state)
     end
 
+    # Check if a certificate needs renewal (missing, unreadable, or expiring soon)
+    # @param cert_config [Hash] Certificate configuration hash
+    # @param days_threshold [Integer] Renew if fewer than this many days remain
+    # @return [Boolean]
     def certificate_needs_renewal?(cert_config, days_threshold: 30)
       cert_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, cert_name, 'cert.pem')
@@ -894,6 +1001,9 @@ module CertManager
       days_remaining < days_threshold
     end
 
+    # Parse the expiry date from a PEM certificate using openssl
+    # @param cert_path [String] Path to the certificate PEM file
+    # @return [Time, nil] Expiry time, or nil if unreadable
     def get_certificate_expiry(cert_path)
       output = `openssl x509 -enddate -noout -in "#{cert_path}" 2>/dev/null`
       return nil unless $?.success?
@@ -905,6 +1015,8 @@ module CertManager
       nil
     end
 
+    # Print detailed status for a single certificate (domains, expiry, deploy targets)
+    # @param cert_config [Hash] Certificate configuration hash
     def print_certificate_status(cert_config)
       cert_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, cert_name, 'cert.pem')
@@ -961,6 +1073,7 @@ module CertManager
       end
     end
 
+    # Print the current environment setting (override or default)
     def print_environment_info
       if @environment_override
         puts "Environment override: #{@environment_override.to_s.upcase}"
