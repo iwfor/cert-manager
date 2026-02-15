@@ -57,7 +57,7 @@ module CertManager
         domain_id = get_domain_id(domain)
 
         # DNS Made Easy wants the record name relative to the domain
-        relative_name = record_name.sub(/\.?#{Regexp.escape(extract_root_domain(domain))}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         uri = URI("#{@api_base}/dns/managed/#{domain_id}/records")
         request = Net::HTTP::Post.new(uri)
@@ -107,8 +107,7 @@ module CertManager
       # @return [Array<Hash>] Matching records with :id and :value
       def find_txt_records(domain, record_name)
         domain_id = get_domain_id(domain)
-        root = extract_root_domain(domain)
-        relative_name = record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         uri = URI("#{@api_base}/dns/managed/#{domain_id}/records")
         uri.query = URI.encode_www_form(type: 'TXT', recordName: relative_name)
@@ -123,23 +122,8 @@ module CertManager
         records = data['data'] || []
 
         records.map do |record|
-          { id: record['id'].to_s, value: record['value'].to_s.gsub(/\A"|"\z/, '') }
+          { id: record['id'].to_s, value: unquote_txt_value(record['value']) }
         end
-      end
-
-      # Remove all ACME challenge records for a domain
-      #
-      # @param domain [String] The domain to clean up
-      # @return [Integer] Number of records removed
-      def cleanup_challenge_records(domain)
-        record_name = "_acme-challenge.#{domain}"
-        records = find_txt_records(domain, record_name)
-
-        records.each do |record|
-          remove_txt_record(domain, record[:id])
-        end
-
-        records.length
       end
 
       # List all DNS records for a domain
@@ -165,7 +149,7 @@ module CertManager
           {
             'record' => record['name'],
             'type' => record['type'],
-            'value' => record['value'].to_s.gsub(/\A"|"\z/, ''),
+            'value' => unquote_txt_value(record['value']),
             'ttl' => record['ttl'],
             'id' => record['id']
           }

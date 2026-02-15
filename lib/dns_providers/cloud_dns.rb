@@ -60,8 +60,7 @@ module CertManager
       # @param value [String] The challenge token value
       # @return [String] JSON identifier for removal
       def add_txt_record(domain, record_name, value)
-        # Ensure record name ends with a dot (Cloud DNS requires FQDN)
-        fqdn = record_name.end_with?('.') ? record_name : "#{record_name}."
+        fqdn = ensure_fqdn(record_name)
 
         # Check if record already exists
         existing = get_existing_record(fqdn)
@@ -109,8 +108,7 @@ module CertManager
       # @return [Boolean] True if successful
       def remove_txt_record(domain, record_id, value = nil)
         record_info = parse_record_id(record_id, value)
-        fqdn = record_info[:record_name]
-        fqdn = "#{fqdn}." unless fqdn.end_with?('.')
+        fqdn = ensure_fqdn(record_info[:record_name])
 
         existing = get_existing_record(fqdn)
         return true unless existing
@@ -147,13 +145,13 @@ module CertManager
       # @param record_name [String] The record name to find
       # @return [Array<Hash>] Matching records
       def find_txt_records(domain, record_name)
-        fqdn = record_name.end_with?('.') ? record_name : "#{record_name}."
+        fqdn = ensure_fqdn(record_name)
 
         existing = get_existing_record(fqdn)
         return [] unless existing
 
         existing.rrdatas.map do |val|
-          { record_name: existing.name, value: val.gsub(/\A"|"\z/, '') }
+          { record_name: existing.name, value: unquote_txt_value(val) }
         end
       end
 
@@ -167,7 +165,7 @@ module CertManager
 
         return 0 if records.empty?
 
-        fqdn = record_name.end_with?('.') ? record_name : "#{record_name}."
+        fqdn = ensure_fqdn(record_name)
         existing = get_existing_record(fqdn)
 
         return 0 unless existing
@@ -203,7 +201,7 @@ module CertManager
               records << {
                 'record' => rrs.name,
                 'type' => rrs.type,
-                'value' => val.gsub(/\A"|"\z/, ''),
+                'value' => unquote_txt_value(val),
                 'ttl' => rrs.ttl
               }
             end
@@ -271,20 +269,6 @@ module CertManager
         true # Continue even if not fully complete
       end
 
-      def parse_record_id(record_id, fallback_value)
-        begin
-          info = JSON.parse(record_id)
-          {
-            record_name: info['record_name'],
-            value: info['value']
-          }
-        rescue JSON::ParserError
-          {
-            record_name: record_id,
-            value: fallback_value
-          }
-        end
-      end
     end
   end
 end

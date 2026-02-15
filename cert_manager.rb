@@ -177,7 +177,7 @@ module CertManager
         raise "Certificate '#{cert_name}' has no deploy targets configured"
       end
 
-      actual_name = cert_config['name'] || cert_config['domains'].first
+      actual_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, actual_name, 'cert.pem')
       unless File.exist?(cert_path) || @dry_run
         raise "Certificate files not found for '#{cert_name}' — request or renew first"
@@ -243,7 +243,7 @@ module CertManager
       end
 
       certificates_to_check.each do |cert_config|
-        name = cert_config['name'] || cert_config['domains'].first
+        name = cert_name_for(cert_config)
 
         if force || certificate_needs_renewal?(cert_config)
           @logger.info("Renewing certificate: #{name}")
@@ -323,7 +323,7 @@ module CertManager
       cert_config = find_certificate(cert_name)
       raise "Certificate '#{cert_name}' not found in configuration" unless cert_config
 
-      actual_name = cert_config['name'] || cert_config['domains'].first
+      actual_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, actual_name, 'cert.pem')
 
       unless File.exist?(cert_path)
@@ -412,6 +412,26 @@ module CertManager
       logger
     end
 
+    def cert_name_for(cert_config)
+      cert_config['name'] || cert_config['domains'].first
+    end
+
+    def days_until_expiry(expiry)
+      (expiry - Time.now) / 86400
+    end
+
+    def hook_script_preamble
+      <<~'RUBY'
+        config = YAML.safe_load(File.read(ENV["CERT_MANAGER_CONFIG"]))
+        provider_config = config["dns_providers"][ENV["CERT_MANAGER_PROVIDER"]]
+        provider = CertManager::DNSProviders.create(
+          provider_config["type"],
+          ENV["CERT_MANAGER_PROVIDER"],
+          provider_config.reject { |k, _| k == "type" }
+        )
+      RUBY
+    end
+
     def find_certificate(name)
       @config.certificates.find do |c|
         c['name'] == name || c['domains'].first == name
@@ -423,7 +443,7 @@ module CertManager
       provider_name = cert_config['dns_provider']
       dns_alias = cert_config['dns_alias']
       env = effective_environment(cert_config)
-      cert_name = cert_config['name'] || domains.first
+      cert_name = cert_name_for(cert_config)
 
       # Encourage staging for first-time production requests
       if env == :production && !certificate_exists?(cert_config)
@@ -468,7 +488,7 @@ module CertManager
     end
 
     def certificate_exists?(cert_config)
-      cert_name = cert_config['name'] || cert_config['domains'].first
+      cert_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, cert_name, 'cert.pem')
       File.exist?(cert_path)
     end
@@ -537,39 +557,32 @@ module CertManager
 
     def auth_hook_script(provider, dns_alias)
       lib_path = File.expand_path('lib/dns_providers', __dir__)
+      preamble = hook_script_preamble
 
-      # Use non-interpolating heredoc, then substitute lib_path
-      script = <<~'RUBY'.gsub('{{LIB_PATH}}', lib_path)
+      script = <<~RUBY
         #!/usr/bin/env ruby
         require 'yaml'
-        require '{{LIB_PATH}}'
+        require '#{lib_path}'
 
         begin
-          config = YAML.safe_load(File.read(ENV["CERT_MANAGER_CONFIG"]))
-          provider_config = config["dns_providers"][ENV["CERT_MANAGER_PROVIDER"]]
-          provider = CertManager::DNSProviders.create(
-            provider_config["type"],
-            ENV["CERT_MANAGER_PROVIDER"],
-            provider_config.reject { |k, _| k == "type" }
-          )
-
+        #{preamble}
           domain = ENV["CERTBOT_DOMAIN"]
           validation = ENV["CERTBOT_VALIDATION"]
-          record_name = ENV["CERT_MANAGER_DNS_ALIAS"] || "_acme-challenge.#{domain}"
+          record_name = ENV["CERT_MANAGER_DNS_ALIAS"] || "_acme-challenge.\#{domain}"
 
-          puts "Adding TXT record: #{record_name} = #{validation}"
+          puts "Adding TXT record: \#{record_name} = \#{validation}"
           record_id = provider.add_txt_record(domain, record_name, validation)
 
           # Store record ID for cleanup
-          File.write("/tmp/certbot_record_#{domain}", record_id.to_s)
-          puts "Record ID saved: #{record_id}"
+          File.write("/tmp/certbot_record_\#{domain}", record_id.to_s)
+          puts "Record ID saved: \#{record_id}"
 
           # Wait for propagation
-          puts "Waiting #{ENV["CERT_MANAGER_PROPAGATION_WAIT"]}s for DNS propagation..."
+          puts "Waiting \#{ENV["CERT_MANAGER_PROPAGATION_WAIT"]}s for DNS propagation..."
           sleep(ENV["CERT_MANAGER_PROPAGATION_WAIT"].to_i)
         rescue => e
-          STDERR.puts "Auth hook error: #{e.message}"
-          STDERR.puts e.backtrace.first(5).join("\n")
+          STDERR.puts "Auth hook error: \#{e.message}"
+          STDERR.puts e.backtrace.first(5).join("\\n")
           exit 1
         end
       RUBY
@@ -579,38 +592,31 @@ module CertManager
 
     def cleanup_hook_script(provider, dns_alias)
       lib_path = File.expand_path('lib/dns_providers', __dir__)
+      preamble = hook_script_preamble
 
-      # Use non-interpolating heredoc, then substitute lib_path
-      script = <<~'RUBY'.gsub('{{LIB_PATH}}', lib_path)
+      script = <<~RUBY
         #!/usr/bin/env ruby
         require 'yaml'
-        require '{{LIB_PATH}}'
+        require '#{lib_path}'
 
         begin
-          config = YAML.safe_load(File.read(ENV["CERT_MANAGER_CONFIG"]))
-          provider_config = config["dns_providers"][ENV["CERT_MANAGER_PROVIDER"]]
-          provider = CertManager::DNSProviders.create(
-            provider_config["type"],
-            ENV["CERT_MANAGER_PROVIDER"],
-            provider_config.reject { |k, _| k == "type" }
-          )
-
+        #{preamble}
           domain = ENV["CERTBOT_DOMAIN"]
           validation = ENV["CERTBOT_VALIDATION"]
 
-          record_id_file = "/tmp/certbot_record_#{domain}"
+          record_id_file = "/tmp/certbot_record_\#{domain}"
           if File.exist?(record_id_file)
             record_id = File.read(record_id_file).strip
-            puts "Removing TXT record: #{record_id} for #{domain}"
+            puts "Removing TXT record: \#{record_id} for \#{domain}"
             provider.remove_txt_record(domain, record_id, validation)
             File.delete(record_id_file)
             puts "TXT record removed successfully"
           else
-            STDERR.puts "Warning: Record ID file not found: #{record_id_file}"
+            STDERR.puts "Warning: Record ID file not found: \#{record_id_file}"
           end
         rescue => e
-          STDERR.puts "Cleanup hook error: #{e.message}"
-          STDERR.puts e.backtrace.first(5).join("\n")
+          STDERR.puts "Cleanup hook error: \#{e.message}"
+          STDERR.puts e.backtrace.first(5).join("\\n")
           exit 1
         end
       RUBY
@@ -640,7 +646,7 @@ module CertManager
     end
 
     def deploy_certificate(cert_config)
-      cert_name = cert_config['name'] || cert_config['domains'].first
+      cert_name = cert_name_for(cert_config)
 
       cert_config['deploy'].each do |target|
         sudo = target.fetch('sudo', true) != false ? 'sudo ' : ''
@@ -876,7 +882,7 @@ module CertManager
     end
 
     def certificate_needs_renewal?(cert_config, days_threshold: 30)
-      cert_name = cert_config['name'] || cert_config['domains'].first
+      cert_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, cert_name, 'cert.pem')
 
       return true unless File.exist?(cert_path)
@@ -884,7 +890,7 @@ module CertManager
       expiry = get_certificate_expiry(cert_path)
       return true unless expiry
 
-      days_remaining = (expiry - Time.now) / 86400
+      days_remaining = days_until_expiry(expiry)
       days_remaining < days_threshold
     end
 
@@ -900,7 +906,7 @@ module CertManager
     end
 
     def print_certificate_status(cert_config)
-      cert_name = cert_config['name'] || cert_config['domains'].first
+      cert_name = cert_name_for(cert_config)
       cert_path = File.join(@config.cert_dir, cert_name, 'cert.pem')
       env = effective_environment(cert_config)
 
@@ -913,7 +919,7 @@ module CertManager
       if File.exist?(cert_path)
         expiry = get_certificate_expiry(cert_path)
         if expiry
-          days_left = ((expiry - Time.now) / 86400).to_i
+          days_left = days_until_expiry(expiry).to_i
           status = days_left < 30 ? 'NEEDS RENEWAL' : 'OK'
           puts "  Expires: #{expiry.strftime('%Y-%m-%d')} (#{days_left} days)"
           puts "  Status: #{status}"

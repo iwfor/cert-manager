@@ -61,8 +61,7 @@ module CertManager
       # @param value [String] The challenge token value
       # @return [String] The record name (used as identifier for removal)
       def add_txt_record(domain, record_name, value)
-        # Ensure record name ends with a dot (Route 53 requires FQDN)
-        fqdn = record_name.end_with?('.') ? record_name : "#{record_name}."
+        fqdn = ensure_fqdn(record_name)
 
         # TXT records need to be quoted
         quoted_value = %("#{value}")
@@ -104,8 +103,7 @@ module CertManager
       # @return [Boolean] True if successful
       def remove_txt_record(domain, record_id, value = nil)
         record_info = parse_record_id(record_id, value)
-        fqdn = record_info[:record_name]
-        fqdn = "#{fqdn}." unless fqdn.end_with?('.')
+        fqdn = ensure_fqdn(record_info[:record_name])
 
         quoted_value = %("#{record_info[:value]}")
 
@@ -145,7 +143,7 @@ module CertManager
       # @param record_name [String] The record name to find
       # @return [Array<Hash>] Matching records
       def find_txt_records(domain, record_name)
-        fqdn = record_name.end_with?('.') ? record_name : "#{record_name}."
+        fqdn = ensure_fqdn(record_name)
 
         response = @client.list_resource_record_sets(
           hosted_zone_id: @hosted_zone_id,
@@ -159,29 +157,16 @@ module CertManager
           next unless rrs.type == 'TXT' && rrs.name == fqdn
 
           rrs.resource_records.each do |rr|
-            # Remove surrounding quotes from TXT value
-            val = rr.value.gsub(/\A"|"\z/, '')
-            records << { record_name: rrs.name, value: val }
+            val = unquote_txt_value(rr.value)
+            records << {
+              id: { record_name: rrs.name, value: val }.to_json,
+              record_name: rrs.name,
+              value: val
+            }
           end
         end
 
         records
-      end
-
-      # Remove all ACME challenge records for a domain
-      #
-      # @param domain [String] The domain to clean up
-      # @return [Integer] Number of records removed
-      def cleanup_challenge_records(domain)
-        record_name = "_acme-challenge.#{domain}"
-        records = find_txt_records(domain, record_name)
-
-        records.each do |record|
-          record_id = { record_name: record[:record_name], value: record[:value] }.to_json
-          remove_txt_record(domain, record_id)
-        end
-
-        records.length
       end
 
       # List all TXT records in the hosted zone
@@ -203,7 +188,7 @@ module CertManager
               records << {
                 'record' => rrs.name,
                 'type' => rrs.type,
-                'value' => rr.value.gsub(/\A"|"\z/, ''),
+                'value' => unquote_txt_value(rr.value),
                 'ttl' => rrs.ttl
               }
             end
@@ -257,20 +242,6 @@ module CertManager
         true # Continue even if not fully synced
       end
 
-      def parse_record_id(record_id, fallback_value)
-        begin
-          info = JSON.parse(record_id)
-          {
-            record_name: info['record_name'],
-            value: info['value']
-          }
-        rescue JSON::ParserError
-          {
-            record_name: record_id,
-            value: fallback_value
-          }
-        end
-      end
     end
   end
 end

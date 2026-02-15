@@ -141,24 +141,12 @@ module CertManager
         all_records.select do |record|
           record['type'] == 'TXT' && record['record'] == record_name
         end.map do |record|
-          { record_name: record['record'], value: record['value'] }
+          {
+            id: { record_name: record['record'], value: record['value'] }.to_json,
+            record_name: record['record'],
+            value: record['value']
+          }
         end
-      end
-
-      # Remove all ACME challenge records for a domain
-      #
-      # @param domain [String] The domain to clean up
-      # @return [Integer] Number of records removed
-      def cleanup_challenge_records(domain)
-        record_name = "_acme-challenge.#{domain}"
-        records = find_txt_records(domain, record_name)
-
-        records.each do |record|
-          record_id = { record_name: record[:record_name], value: record[:value] }.to_json
-          remove_txt_record(domain, record_id)
-        end
-
-        records.length
       end
 
       # Override propagation wait - Dreamhost can be slower
@@ -188,22 +176,6 @@ module CertManager
         end
       end
 
-      def parse_record_id(record_id, fallback_value)
-        # Try to parse as JSON first
-        begin
-          info = JSON.parse(record_id)
-          {
-            record_name: info['record_name'],
-            value: info['value']
-          }
-        rescue JSON::ParserError
-          # Assume record_id is the record name
-          {
-            record_name: record_id,
-            value: fallback_value
-          }
-        end
-      end
     end
   end
 end

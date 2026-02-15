@@ -44,8 +44,7 @@ module CertManager
       # @return [String] The Linode record ID
       def add_txt_record(domain, record_name, value)
         domain_id = get_domain_id(domain)
-        root = extract_root_domain(domain)
-        relative_name = record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         uri = URI("#{API_BASE}/domains/#{domain_id}/records")
         request = Net::HTTP::Post.new(uri)
@@ -95,8 +94,7 @@ module CertManager
       # @return [Array<Hash>] Matching records with :id and :target
       def find_txt_records(domain, record_name)
         domain_id = get_domain_id(domain)
-        root = extract_root_domain(domain)
-        relative_name = record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         uri = URI("#{API_BASE}/domains/#{domain_id}/records")
         request = Net::HTTP::Get.new(uri)
@@ -114,21 +112,6 @@ module CertManager
         end.map do |record|
           { id: record['id'].to_s, target: record['target'] }
         end
-      end
-
-      # Remove all ACME challenge records for a domain
-      #
-      # @param domain [String] The domain to clean up
-      # @return [Integer] Number of records removed
-      def cleanup_challenge_records(domain)
-        record_name = "_acme-challenge.#{domain}"
-        records = find_txt_records(domain, record_name)
-
-        records.each do |record|
-          remove_txt_record(domain, record[:id])
-        end
-
-        records.length
       end
 
       private

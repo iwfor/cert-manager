@@ -43,7 +43,7 @@ module CertManager
       # @return [String] The DigitalOcean record ID
       def add_txt_record(domain, record_name, value)
         root = extract_root_domain(domain)
-        relative_name = record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         uri = URI("#{API_BASE}/domains/#{root}/records")
         request = Net::HTTP::Post.new(uri)
@@ -93,7 +93,7 @@ module CertManager
       # @return [Array<Hash>] Matching records with :id and :data
       def find_txt_records(domain, record_name)
         root = extract_root_domain(domain)
-        relative_name = record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         uri = URI("#{API_BASE}/domains/#{root}/records")
         uri.query = URI.encode_www_form(type: 'TXT', name: relative_name)
@@ -110,21 +110,6 @@ module CertManager
         records.map do |record|
           { id: record['id'].to_s, data: record['data'] }
         end
-      end
-
-      # Remove all ACME challenge records for a domain
-      #
-      # @param domain [String] The domain to clean up
-      # @return [Integer] Number of records removed
-      def cleanup_challenge_records(domain)
-        record_name = "_acme-challenge.#{domain}"
-        records = find_txt_records(domain, record_name)
-
-        records.each do |record|
-          remove_txt_record(domain, record[:id])
-        end
-
-        records.length
       end
 
       private

@@ -84,7 +84,68 @@ module CertManager
         raise NotImplementedError, "#{name} must implement .required_credentials"
       end
 
+      # Remove all ACME challenge records for a domain
+      # Default implementation works for providers whose find_txt_records returns
+      # records with :id or :value keys. Override for providers with custom logic.
+      #
+      # @param domain [String] The domain to clean up
+      # @return [Integer] Number of records removed
+      def cleanup_challenge_records(domain)
+        record_name = "_acme-challenge.#{domain}"
+        records = find_txt_records(domain, record_name)
+
+        records.each do |record|
+          remove_txt_record(domain, record[:id] || record[:value])
+        end
+
+        records.length
+      end
+
       protected
+
+      # Extract the relative record name by stripping the root domain suffix
+      #
+      # @param record_name [String] Full DNS record name
+      # @param domain [String] The domain
+      # @return [String] Record name relative to the root domain
+      def extract_relative_name(record_name, domain)
+        root = extract_root_domain(domain)
+        record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+      end
+
+      # Parse a record ID that may be a JSON composite or a plain string
+      #
+      # @param record_id [String] Record identifier (JSON or plain)
+      # @param fallback_value [String] Value to use if record_id is not JSON
+      # @return [Hash] Hash with :record_name and :value keys
+      def parse_record_id(record_id, fallback_value)
+        info = JSON.parse(record_id)
+        {
+          record_name: info['record_name'],
+          value: info['value']
+        }
+      rescue JSON::ParserError
+        {
+          record_name: record_id,
+          value: fallback_value
+        }
+      end
+
+      # Ensure a DNS name ends with a trailing dot (FQDN format)
+      #
+      # @param name [String] DNS name
+      # @return [String] Name with trailing dot
+      def ensure_fqdn(name)
+        name.end_with?('.') ? name : "#{name}."
+      end
+
+      # Remove surrounding double quotes from a TXT record value
+      #
+      # @param value [String] Possibly quoted value
+      # @return [String] Unquoted value
+      def unquote_txt_value(value)
+        value.to_s.gsub(/\A"|"\z/, '')
+      end
 
       # Validate that all required credentials are present
       # @raise [ArgumentError] If required credentials are missing

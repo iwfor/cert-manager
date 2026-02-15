@@ -114,21 +114,6 @@ module CertManager
         end
       end
 
-      # Remove all ACME challenge records for a domain
-      #
-      # @param domain [String] The domain to clean up
-      # @return [Integer] Number of records removed
-      def cleanup_challenge_records(domain)
-        record_name = "_acme-challenge.#{domain}"
-        records = find_txt_records(domain, record_name)
-
-        records.each do |record|
-          remove_txt_record(domain, record[:id])
-        end
-
-        records.length
-      end
-
       private
 
       def set_auth_headers(request)

@@ -54,7 +54,7 @@ module CertManager
       def add_txt_record(domain, record_name, value)
         root = extract_root_domain(domain)
         sld, tld = split_domain(root)
-        relative_name = record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         # Get existing records
         hosts = get_hosts(sld, tld)
@@ -107,7 +107,7 @@ module CertManager
       def find_txt_records(domain, record_name)
         root = extract_root_domain(domain)
         sld, tld = split_domain(root)
-        relative_name = record_name.sub(/\.?#{Regexp.escape(root)}\.?$/, '')
+        relative_name = extract_relative_name(record_name, domain)
 
         hosts = get_hosts(sld, tld)
 
@@ -116,21 +116,6 @@ module CertManager
         end.map do |host|
           { name: host['HostName'], value: host['Address'] }
         end
-      end
-
-      # Remove all ACME challenge records for a domain
-      #
-      # @param domain [String] The domain to clean up
-      # @return [Integer] Number of records removed
-      def cleanup_challenge_records(domain)
-        record_name = "_acme-challenge.#{domain}"
-        records = find_txt_records(domain, record_name)
-
-        records.each do |record|
-          remove_txt_record(domain, record[:value])
-        end
-
-        records.length
       end
 
       private
