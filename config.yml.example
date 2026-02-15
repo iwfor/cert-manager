@@ -78,6 +78,30 @@ dns_providers:
     secret_key: your-secret-key
     # sandbox: true  # Use sandbox API for testing
 
+  # DigitalOcean DNS provider
+  # Requires a personal access token with read/write scope
+  # Create at: https://cloud.digitalocean.com/account/api/tokens
+  digitalocean_dns:
+    type: digitalocean
+    api_token: your-digitalocean-api-token-here
+
+  # Linode (Akamai) DNS provider
+  # Requires a personal access token with Domains read/write scope
+  # Create at: https://cloud.linode.com/profile/tokens
+  linode_dns:
+    type: linode
+    api_token: your-linode-api-token-here
+
+  # Namecheap DNS provider
+  # Requires API access enabled on your account
+  # Enable at: https://www.namecheap.com/support/api/intro/
+  # Your IP must be whitelisted in the API access settings
+  namecheap_dns:
+    type: namecheap
+    api_key: your-api-key
+    api_user: your-username
+    client_ip: 1.2.3.4
+
 # Certificates to manage
 # Each certificate defines domains, the DNS provider to use, and optional settings
 certificates:

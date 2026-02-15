@@ -36,6 +36,9 @@ require_relative 'dns_providers/dreamhost'
 require_relative 'dns_providers/route53'
 require_relative 'dns_providers/cloud_dns'
 require_relative 'dns_providers/dnsmadeeasy'
+require_relative 'dns_providers/digitalocean'
+require_relative 'dns_providers/linode'
+require_relative 'dns_providers/namecheap'
 
 module CertManager
   module DNSProviders
@@ -140,5 +143,8 @@ module CertManager
     register(Route53)
     register(CloudDNS)
     register(DNSMadeEasy)
+    register(DigitalOcean)
+    register(Linode)
+    register(Namecheap)
   end
 end

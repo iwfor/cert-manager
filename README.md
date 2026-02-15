@@ -11,6 +11,9 @@ A Ruby tool for managing Let's Encrypt certificates for internal hosts using DNS
   - AWS Route 53
   - GCP Cloud DNS
   - DNS Made Easy
+  - DigitalOcean
+  - Linode (Akamai)
+  - Namecheap
 - DNS alias support for hosts without public DNS
 - Staging and production environments
 - Cron-friendly for automated renewals
@@ -325,6 +328,49 @@ Options:
   -h, --help           Show help
 ```
 
+## Testing DNS Providers
+
+After configuring a DNS provider in your `config.yml` (see [DNS Provider Setup](#dns-provider-setup) below), use `test_dns_provider.rb` to verify that the API credentials are working before requesting certificates. It creates a temporary TXT record, verifies it via DNS lookup and API query, then removes it — all without involving certbot.
+
+### Basic test
+
+Assuming your config has a provider named `cloudflare_dns`:
+
+```bash
+./test_dns_provider.rb -p cloudflare_dns -d example.com
+```
+
+This runs four tests against the provider named `cloudflare_dns` in your config:
+
+1. **Add** a test TXT record (`_acme-challenge-test.example.com`)
+2. **Verify** the record via DNS lookup (waits 10 seconds for propagation)
+3. **Find** the record via the provider's API
+4. **Remove** the record and confirm deletion
+
+### Options
+
+| Flag | Description |
+|------|-------------|
+| `-p, --provider NAME` | Provider name from config (required) |
+| `-d, --domain DOMAIN` | Domain to test with (required for add/remove) |
+| `-c, --config PATH` | Config file path (default: `~/.config/cert_manager/config.yml`) |
+| `-k, --keep` | Keep the test record instead of deleting it |
+| `-l, --list` | List existing DNS records only (requires `-d`) |
+| `-w, --wait SECONDS` | Seconds to wait for DNS propagation (default: 10) |
+| `-v, --verbose` | Show verbose output including stack traces |
+
+### List existing records
+
+Some providers support listing all DNS records for a domain:
+
+```bash
+./test_dns_provider.rb -p cloudflare_dns -d example.com --list
+```
+
+### Troubleshooting
+
+If the DNS verification step reports "Record not found", the record may need more propagation time. Try increasing the wait with `-w 30`. The API-level find test (test 3) will confirm whether the record was actually created.
+
 ## DNS Provider Setup
 
 * Cloudflare - tested working
@@ -332,6 +378,9 @@ Options:
 * AWS Route 53 - to be tested
 * GCP Cloud DNS - to be tested
 * DNS Made Easy - to be tested
+* DigitalOcean - to be tested
+* Linode (Akamai) - to be tested
+* Namecheap - to be tested
 
 ### Cloudflare
 
@@ -414,6 +463,47 @@ If you don't provide `credentials_file`, the SDK uses Application Default Creden
    ```
 
 Optional: Use `sandbox: true` to test against the DNS Made Easy sandbox environment.
+
+### DigitalOcean
+
+1. Go to https://cloud.digitalocean.com/account/api/tokens
+2. Create a personal access token with **read/write** scope
+3. Add to config:
+   ```yaml
+   dns_providers:
+     digitalocean:
+       type: digitalocean
+       api_token: your-token
+   ```
+
+### Linode (Akamai)
+
+1. Go to https://cloud.linode.com/profile/tokens
+2. Create a personal access token with **Domains: Read/Write** scope
+3. Add to config:
+   ```yaml
+   dns_providers:
+     linode:
+       type: linode
+       api_token: your-token
+   ```
+
+### Namecheap
+
+1. Enable API access at https://www.namecheap.com/support/api/intro/
+2. Whitelist your IP address in the API access settings
+3. Note your API key and username
+4. Add to config:
+   ```yaml
+   dns_providers:
+     namecheap:
+       type: namecheap
+       api_key: your-api-key
+       api_user: your-username
+       client_ip: 1.2.3.4
+   ```
+
+Note: `client_ip` must match an IP whitelisted in your Namecheap API settings.
 
 ---
 
