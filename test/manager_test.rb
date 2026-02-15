@@ -396,6 +396,99 @@ class ManagerTest < Test::Unit::TestCase
     assert_no_match(/apache2/, output)
   end
 
+  # --- deploy (dry run) append_key ---
+
+  def test_deploy_dry_run_append_key_local
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'local' => true, 'path' => '/etc/ssl/combined.pem',
+            'append_key' => true, 'service' => 'copy' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/cp fullchain\.pem/, output)
+    assert_match(/cat privkey\.pem >> \/etc\/ssl\/combined\.pem/, output)
+    assert_match(/chmod 0600 \/etc\/ssl\/combined\.pem/, output)
+    assert_no_match(/systemctl/, output)
+  end
+
+  def test_deploy_dry_run_append_key_remote
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'lb1', 'path' => '/etc/haproxy/cert.pem',
+            'append_key' => true, 'service' => 'copy' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/deploy@lb1/, output)
+    assert_match(/cat \/tmp\/privkey.*>> \/etc\/haproxy\/cert\.pem/, output)
+    assert_match(/chmod 0600 \/etc\/haproxy\/cert\.pem/, output)
+  end
+
+  def test_deploy_dry_run_append_key_with_key_path
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'local' => true, 'path' => '/etc/ssl/combined.pem',
+            'key_path' => '/etc/ssl/private/key.pem',
+            'append_key' => true, 'service' => 'copy' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/cat privkey\.pem >> \/etc\/ssl\/combined\.pem/, output)
+    assert_match(/cp privkey\.pem \/etc\/ssl\/private\/key\.pem/, output)
+  end
+
+  # --- deploy (dry run) custom_command ---
+
+  def test_deploy_dry_run_custom_command_local
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'local' => true, 'path' => '/etc/ssl/cert.pem',
+            'service' => 'copy', 'custom_command' => '/usr/local/bin/reload-proxy' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(%r{/usr/local/bin/reload-proxy}, output)
+    assert_no_match(/systemctl/, output)
+  end
+
+  def test_deploy_dry_run_custom_command_remote
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'copy', 'custom_command' => 'sudo systemctl reload haproxy' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/ssh deploy@web1 sudo systemctl reload haproxy/, output)
+    assert_no_match(/\[DRY RUN\]   sudo systemctl/, output)
+  end
+
   # --- certificate_needs_renewal? ---
 
   def test_needs_renewal_when_cert_missing

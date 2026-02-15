@@ -192,6 +192,43 @@ class ConfigTest < Test::Unit::TestCase
     assert_equal 'copy', config.certificates.first['deploy'].first['service']
   end
 
+  def test_accepts_custom_command_with_copy
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'ok', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'copy', 'custom_command' => 'sudo systemctl reload haproxy' }
+        ] }
+    ])
+    config = CertManager::Config.new(path)
+    assert_equal 'sudo systemctl reload haproxy', config.certificates.first['deploy'].first['custom_command']
+  end
+
+  def test_rejects_custom_command_with_non_copy_service
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'bad', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'nginx', 'custom_command' => 'echo hello' }
+        ] }
+    ])
+    assert_raise(CertManager::ConfigError) do
+      CertManager::Config.new(path)
+    end
+  end
+
+  def test_accepts_append_key
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'ok', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'nginx', 'append_key' => true }
+        ] }
+    ])
+    config = CertManager::Config.new(path)
+    assert_equal true, config.certificates.first['deploy'].first['append_key']
+  end
+
   def test_accepts_sudo_false
     path = write_config(@tmpdir, 'certificates' => [
       { 'name' => 'ok', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',

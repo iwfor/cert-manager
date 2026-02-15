@@ -95,6 +95,11 @@ certificates:
     #   apache - reloads the 'apache2' systemd unit; set service_name for
     #            distros that use 'httpd' (default action: reload)
     #   copy   - copies files only, no service restart
+    #            set custom_command to run your own reload/restart command
+    #
+    # Additional options:
+    #   append_key: true  - appends privkey.pem to the cert file for services
+    #                       that need a combined PEM (e.g. HAProxy)
     deploy:
       - user: deploy
         host: web1.example.com
@@ -134,18 +139,32 @@ certificates:
         service: nginx
         sudo: false           # set false when running as root or paths are user-writable
 
-  # Copy-only deploy (no service restart)
-  # Useful when another process handles the reload, or for backup/archival
-  - name: copy-only
+  # Copy-only deploy with custom command
+  # Useful when the service isn't managed by systemctl
+  - name: custom-service
     domains:
-      - backup.example.com
+      - custom.example.com
     dns_provider: cloudflare_dns
     deploy:
       - user: deploy
-        host: backup.example.com
-        path: /etc/ssl/certs/backup.example.com.crt
-        key_path: /etc/ssl/private/backup.example.com.key
+        host: custom.example.com
+        path: /etc/ssl/certs/custom.example.com.crt
+        key_path: /etc/ssl/private/custom.example.com.key
         service: copy
+        custom_command: sudo /usr/local/bin/reload-my-service
+
+  # Combined PEM deploy (cert + key in one file, e.g. HAProxy)
+  - name: haproxy-server
+    domains:
+      - ha.example.com
+    dns_provider: cloudflare_dns
+    deploy:
+      - user: deploy
+        host: lb1.example.com
+        path: /etc/haproxy/certs/ha.example.com.pem
+        append_key: true      # appends privkey.pem to the cert file
+        service: copy
+        custom_command: sudo systemctl reload haproxy
 
   # Certificate with multiple domains (SAN)
   - name: multi-domain

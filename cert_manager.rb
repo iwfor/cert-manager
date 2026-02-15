@@ -120,6 +120,10 @@ module CertManager
         if target['action'] && !SUPPORTED_DEPLOY_ACTIONS.include?(target['action'])
           raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} unsupported action '#{target['action']}' (supported: #{SUPPORTED_DEPLOY_ACTIONS.join(', ')})"
         end
+
+        if target['custom_command'] && target['service'] != 'copy'
+          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} custom_command is only supported with service 'copy'"
+        end
       end
     end
   end
@@ -647,22 +651,33 @@ module CertManager
           if target['local']
             @logger.info("[DRY RUN] Would deploy locally")
             @logger.info("[DRY RUN]   #{sudo}cp fullchain.pem #{target['path']}")
+            if target['append_key']
+              @logger.info("[DRY RUN]   #{sudo}cat privkey.pem >> #{target['path']}")
+              @logger.info("[DRY RUN]   #{sudo}chmod 0600 #{target['path']}")
+            end
             if target['key_path']
               @logger.info("[DRY RUN]   #{sudo}cp privkey.pem #{target['key_path']}")
               @logger.info("[DRY RUN]   #{sudo}chmod 0600 #{target['key_path']}")
             end
             @logger.info("[DRY RUN]   #{sudo}systemctl #{action} #{unit}") if unit
+            @logger.info("[DRY RUN]   #{target['custom_command']}") if target['custom_command']
           else
             remote = "#{target['user']}@#{target['host']}"
             @logger.info("[DRY RUN] Would deploy to #{remote}")
             @logger.info("[DRY RUN]   scp fullchain.pem -> #{remote}:/tmp/")
             @logger.info("[DRY RUN]   #{sudo}cp /tmp/fullchain.pem #{target['path']}")
+            if target['append_key']
+              @logger.info("[DRY RUN]   scp privkey.pem -> #{remote}:/tmp/")
+              @logger.info("[DRY RUN]   #{sudo}cat /tmp/privkey.pem >> #{target['path']}")
+              @logger.info("[DRY RUN]   #{sudo}chmod 0600 #{target['path']}")
+            end
             if target['key_path']
               @logger.info("[DRY RUN]   scp privkey.pem -> #{remote}:/tmp/")
               @logger.info("[DRY RUN]   #{sudo}cp /tmp/privkey.pem #{target['key_path']}")
               @logger.info("[DRY RUN]   #{sudo}chmod 0600 #{target['key_path']}")
             end
             @logger.info("[DRY RUN]   #{sudo}systemctl #{action} #{unit}") if unit
+            @logger.info("[DRY RUN]   ssh #{remote} #{target['custom_command']}") if target['custom_command']
           end
           next
         end
@@ -682,25 +697,35 @@ module CertManager
       cert_dir = File.join(@config.cert_dir, cert_name)
       path = target['path']
       key_path = target['key_path']
+      append_key = target['append_key']
+      custom_command = target['custom_command']
       unit = resolve_service_unit(target)
       action = target['action'] || 'reload'
       sudo = target.fetch('sudo', true) != false ? 'sudo ' : ''
 
       if target['local']
-        deploy_local(cert_dir, path, key_path, unit, action, sudo)
+        deploy_local(cert_dir, path, key_path, append_key, unit, action, sudo, custom_command)
       else
-        deploy_remote(cert_dir, target, path, key_path, unit, action, sudo)
+        deploy_remote(cert_dir, target, path, key_path, append_key, unit, action, sudo, custom_command)
       end
 
       true
     end
 
-    def deploy_local(cert_dir, path, key_path, unit, action, sudo)
+    def deploy_local(cert_dir, path, key_path, append_key, unit, action, sudo, custom_command)
       @logger.info("Deploying certificate locally to #{path}")
       run_deploy_cmd(
         ['sh', '-c', "#{sudo}cp #{File.join(cert_dir, 'fullchain.pem')} #{path}"],
         "Failed to install certificate to #{path}"
       )
+
+      if append_key
+        @logger.info("Appending private key to #{path}")
+        run_deploy_cmd(
+          ['sh', '-c', "#{sudo}cat #{File.join(cert_dir, 'privkey.pem')} >> #{path} && #{sudo}chmod 0600 #{path}"],
+          "Failed to append private key to #{path}"
+        )
+      end
 
       if key_path
         @logger.info("Deploying private key locally to #{key_path}")
@@ -717,9 +742,17 @@ module CertManager
           "Failed to #{action} #{unit}"
         )
       end
+
+      if custom_command
+        @logger.info("Running custom command: #{custom_command}")
+        run_deploy_cmd(
+          ['sh', '-c', custom_command],
+          "Custom command failed"
+        )
+      end
     end
 
-    def deploy_remote(cert_dir, target, path, key_path, unit, action, sudo)
+    def deploy_remote(cert_dir, target, path, key_path, append_key, unit, action, sudo, custom_command)
       user = target['user']
       host = target['host']
       remote = "#{user}@#{host}"
@@ -737,6 +770,20 @@ module CertManager
       @logger.info("Deploying certificate to #{remote}:#{path}")
       run_deploy_cmd(scp_cert, "Failed to upload certificate to #{remote}")
       run_deploy_cmd(install_cert, "Failed to install certificate to #{path} on #{host}")
+
+      # Append private key to cert file if configured
+      if append_key
+        tmp_key = "/tmp/cert_manager_privkey_#{$$}.pem"
+        scp_key = ['scp', *ssh_opts,
+                   File.join(cert_dir, 'privkey.pem'),
+                   "#{remote}:#{tmp_key}"]
+        append_cmd = ['ssh', *ssh_opts, remote,
+                      "#{sudo}cat #{tmp_key} >> #{path} && #{sudo}chmod 0600 #{path} && rm -f #{tmp_key}"]
+
+        @logger.info("Appending private key to #{remote}:#{path}")
+        run_deploy_cmd(scp_key, "Failed to upload private key to #{remote}")
+        run_deploy_cmd(append_cmd, "Failed to append private key to #{path} on #{host}")
+      end
 
       # Upload private key if key_path is configured
       if key_path
@@ -757,6 +804,15 @@ module CertManager
         service_cmd = ['ssh', *ssh_opts, remote, "#{sudo}systemctl #{action} #{unit}"]
         @logger.info("Running: #{sudo}systemctl #{action} #{unit}")
         run_deploy_cmd(service_cmd, "Failed to #{action} #{unit} on #{host}")
+      end
+
+      # Run custom command if configured
+      if custom_command
+        @logger.info("Running custom command on #{remote}: #{custom_command}")
+        run_deploy_cmd(
+          ['ssh', *ssh_opts, remote, custom_command],
+          "Custom command failed on #{host}"
+        )
       end
     end
 
@@ -875,6 +931,7 @@ module CertManager
         puts "  Deploy targets:"
         cert_config['deploy'].each do |target|
           key_info = target['key_path'] ? " + key:#{target['key_path']}" : ""
+          key_info += " [combined]" if target['append_key']
           dest = target['local'] ? "localhost" : "#{target['user']}@#{target['host']}"
           unit = resolve_service_unit(target)
           service_info = if unit
