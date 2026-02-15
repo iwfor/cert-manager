@@ -137,6 +137,70 @@ Flags:
 ./cert_manager.rb --force renew myserver  # Force renew specific certificate
 ```
 
+## Deploying Certificates
+
+Certificates can be automatically deployed to remote hosts via SSH after being
+requested or renewed. Add a `deploy` section to any certificate in your config:
+
+```yaml
+certificates:
+  - name: myserver
+    domains:
+      - server.example.com
+    dns_provider: cloudflare
+    deploy:
+      - user: deploy
+        host: web1.example.com
+        path: /etc/ssl/certs/myserver.crt
+        key_path: /etc/ssl/private/myserver.key  # optional
+        service: nginx
+        action: reload    # reload (default) or restart
+```
+
+- **path** — destination for the certificate file (fullchain.pem)
+- **key_path** — optional destination for the private key (privkey.pem), set to `0600` permissions
+- Files are uploaded to `/tmp` first, then installed with `sudo cp` so they can be owned by root
+- SSH runs in batch mode (no interactive password prompts)
+- The deploy user must have passwordless `sudo` for `cp`, `chmod`, and `systemctl`
+
+Example sudoers entry for the deploy user:
+
+```
+deploy ALL=(ALL) NOPASSWD: /usr/bin/cp, /usr/bin/chmod, /usr/bin/systemctl
+```
+
+### Manual deploy
+
+To deploy a certificate without requesting or renewing:
+
+```bash
+./cert_manager.rb deploy myserver
+./cert_manager.rb --dry-run deploy myserver  # preview
+```
+
+### Failed deploy retry
+
+If a target host is unreachable during deployment, the failure is recorded in
+`config_dir/deploy_state.json` and deployment continues to the next target.
+Failed deploys are retried automatically at the start of every `renew` run,
+so a temporarily-down server gets its certificate deployed on the next daily
+cron cycle.
+
+Use `list` to see any pending deploy failures:
+
+```bash
+./cert_manager.rb list
+```
+
+Failed targets show the timestamp and error message:
+
+```
+  Deploy targets:
+    - deploy@web1:/etc/ssl/certs/myserver.crt (reload nginx) DEPLOY FAILED
+      Last failure: 2026-02-15T10:30:00Z
+      Error: Failed to upload certificate to deploy@web1 (exit code: 255)
+```
+
 ## Revoking Certificates
 
 To revoke a certificate (e.g., if the private key was compromised):
@@ -170,6 +234,7 @@ Usage: cert_manager.rb [options] <command>
 
 Commands:
   request <name>    Request a new certificate
+  deploy <name>     Deploy certificate to configured targets
   renew [name]      Renew certificate(s) due for renewal
   revoke <name>     Revoke a certificate
   cleanup <name>    Remove leftover ACME challenge DNS records
