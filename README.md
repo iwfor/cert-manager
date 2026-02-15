@@ -1,4 +1,4 @@
-# Let's Encrypt Certificate Manager
+# Certificate Manager for Let's Encrypt
 
 A Ruby tool for managing Let's Encrypt certificates for internal hosts using DNS-based validation.
 
