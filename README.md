@@ -1,5 +1,7 @@
 # Certificate Manager for Let's Encrypt
 
+<img src="logo.png" alt="Logo" width="128" height="128" align="right"/>
+
 A Ruby tool for managing Let's Encrypt certificates for internal hosts using DNS-based validation.
 
 ## Features
