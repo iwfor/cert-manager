@@ -277,6 +277,16 @@ module CertManager
       renewed
     end
 
+    # Print the current environment setting (override or default)
+    def print_environment_info
+      if @environment_override
+        puts "Environment override: #{@environment_override.to_s.upcase}"
+      else
+        puts "Default environment: #{@config.default_environment.to_s.upcase}"
+      end
+      puts ""
+    end
+
     # List all certificates and their status
     def list
       puts "Configured Certificates:"
@@ -1077,15 +1087,6 @@ module CertManager
       end
     end
 
-    # Print the current environment setting (override or default)
-    def print_environment_info
-      if @environment_override
-        puts "Environment override: #{@environment_override.to_s.upcase}"
-      else
-        puts "Default environment: #{@config.default_environment.to_s.upcase}"
-      end
-      puts ""
-    end
   end
 
   # Generate sample configuration
