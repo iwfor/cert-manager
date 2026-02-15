@@ -82,6 +82,33 @@ module CertManager
         unless @dns_providers.key?(provider)
           raise ConfigError, "Certificate references unknown provider: #{provider}"
         end
+
+        validate_deploy_config(cert['name'] || cert['domains'].first, cert['deploy']) if cert['deploy']
+      end
+    end
+
+    SUPPORTED_DEPLOY_SERVICES = %w[nginx].freeze
+    SUPPORTED_DEPLOY_ACTIONS = %w[reload restart].freeze
+
+    def validate_deploy_config(cert_name, deploy_targets)
+      unless deploy_targets.is_a?(Array)
+        raise ConfigError, "Certificate '#{cert_name}': deploy must be a list of targets"
+      end
+
+      deploy_targets.each_with_index do |target, i|
+        %w[user host service path].each do |field|
+          unless target[field] && !target[field].to_s.empty?
+            raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} missing '#{field}'"
+          end
+        end
+
+        unless SUPPORTED_DEPLOY_SERVICES.include?(target['service'])
+          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} unsupported service '#{target['service']}' (supported: #{SUPPORTED_DEPLOY_SERVICES.join(', ')})"
+        end
+
+        if target['action'] && !SUPPORTED_DEPLOY_ACTIONS.include?(target['action'])
+          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} unsupported action '#{target['action']}' (supported: #{SUPPORTED_DEPLOY_ACTIONS.join(', ')})"
+        end
       end
     end
   end
@@ -126,10 +153,50 @@ module CertManager
       request_certificate(cert_config)
     end
 
+    # Retry any previously failed deploys from the state file
+    def retry_failed_deploys
+      state = load_deploy_state
+      pending = state['pending_deploys']
+      return if pending.empty?
+
+      @logger.info("Found #{pending.length} pending deploy(s) to retry")
+
+      succeeded = 0
+      failed = 0
+
+      pending.dup.each do |entry|
+        cert_name = entry['cert_name']
+        target = entry['target']
+        host = target['host']
+
+        if @dry_run
+          @logger.info("[DRY RUN] Would retry deploy of '#{cert_name}' to #{target['user']}@#{host}")
+          next
+        end
+
+        @logger.info("Retrying deploy of '#{cert_name}' to #{target['user']}@#{host}")
+
+        begin
+          deploy_single_target(cert_name, target)
+          clear_pending_deploy(cert_name, target)
+          @logger.info("Retry succeeded for #{cert_name} -> #{host}")
+          succeeded += 1
+        rescue StandardError => e
+          @logger.warn("Retry failed for #{cert_name} -> #{host}: #{e.message}")
+          record_failed_deploy(cert_name, target, e.message)
+          failed += 1
+        end
+      end
+
+      @logger.info("Deploy retries complete: #{succeeded} succeeded, #{failed} failed")
+    end
+
     # Renew certificates that are due
     # If cert_name is provided, only renew that certificate
     # If cert_name is nil, renew all certificates due for renewal
     def renew(cert_name: nil, force: false)
+      retry_failed_deploys
+
       renewed = 0
 
       certificates_to_check = if cert_name
@@ -357,6 +424,7 @@ module CertManager
 
       if @dry_run
         @logger.info("[DRY RUN] Would request #{env} certificate for #{domains.join(', ')}")
+        deploy_certificate(cert_config) if cert_config['deploy']&.any?
         return
       end
 
@@ -426,6 +494,8 @@ module CertManager
       unless success
         raise "Certbot command failed with exit code: #{$?.exitstatus}"
       end
+
+      deploy_certificate(cert_config) if cert_config['deploy']&.any?
 
       @logger.info("Certificate obtained successfully!")
     end
@@ -526,6 +596,118 @@ module CertManager
       end
     end
 
+    def deploy_certificate(cert_config)
+      cert_name = cert_config['name'] || cert_config['domains'].first
+
+      cert_config['deploy'].each do |target|
+        host = target['host']
+        remote = "#{target['user']}@#{host}"
+
+        if @dry_run
+          action = target['action'] || 'reload'
+          @logger.info("[DRY RUN] Would deploy to #{remote}:#{target['path']}/")
+          @logger.info("[DRY RUN]   scp fullchain.pem privkey.pem -> #{remote}:#{target['path']}/")
+          @logger.info("[DRY RUN]   ssh #{remote} sudo systemctl #{action} #{target['service']}")
+          next
+        end
+
+        begin
+          deploy_single_target(cert_name, target)
+          clear_pending_deploy(cert_name, target)
+          @logger.info("Successfully deployed to #{host}")
+        rescue StandardError => e
+          @logger.warn("Deploy failed for #{cert_name} -> #{host}: #{e.message}")
+          record_failed_deploy(cert_name, target, e.message)
+        end
+      end
+    end
+
+    def deploy_single_target(cert_name, target)
+      cert_dir = File.join(@config.cert_dir, cert_name)
+      user = target['user']
+      host = target['host']
+      path = target['path']
+      service = target['service']
+      action = target['action'] || 'reload'
+      remote = "#{user}@#{host}"
+
+      ssh_opts = %w[-o StrictHostKeyChecking=accept-new -o BatchMode=yes]
+
+      scp_cmd = ['scp', ssh_opts,
+                 File.join(cert_dir, 'fullchain.pem'),
+                 File.join(cert_dir, 'privkey.pem'),
+                 "#{remote}:#{path}/"].flatten
+      ssh_cmd = ['ssh', *ssh_opts, remote, "sudo systemctl #{action} #{service}"]
+
+      @logger.info("Deploying certificate to #{remote}:#{path}/")
+
+      if @verbose
+        puts "Deploy command: #{scp_cmd.join(' ')}"
+      end
+
+      unless system(*scp_cmd)
+        raise "Failed to copy certificate files to #{remote}:#{path}/ (exit code: #{$?.exitstatus})"
+      end
+
+      @logger.info("Certificate files copied, running: sudo systemctl #{action} #{service}")
+
+      if @verbose
+        puts "Deploy command: #{ssh_cmd.join(' ')}"
+      end
+
+      unless system(*ssh_cmd)
+        raise "Failed to #{action} #{service} on #{host} (exit code: #{$?.exitstatus})"
+      end
+
+      true
+    end
+
+    def deploy_state_path
+      File.join(@config.config_dir, 'deploy_state.json')
+    end
+
+    def load_deploy_state
+      return { 'pending_deploys' => [] } unless File.exist?(deploy_state_path)
+
+      data = File.read(deploy_state_path).strip
+      return { 'pending_deploys' => [] } if data.empty?
+
+      JSON.parse(data)
+    rescue JSON::ParserError
+      { 'pending_deploys' => [] }
+    end
+
+    def save_deploy_state(state)
+      File.write(deploy_state_path, JSON.pretty_generate(state))
+    end
+
+    def record_failed_deploy(cert_name, target, error_message)
+      state = load_deploy_state
+      pending = state['pending_deploys']
+
+      # Update existing entry or add new one, keyed by cert_name + host
+      existing = pending.find { |e| e['cert_name'] == cert_name && e['target']['host'] == target['host'] }
+      if existing
+        existing['failed_at'] = Time.now.utc.iso8601
+        existing['last_error'] = error_message
+      else
+        pending << {
+          'cert_name' => cert_name,
+          'target' => target,
+          'failed_at' => Time.now.utc.iso8601,
+          'last_error' => error_message
+        }
+      end
+
+      save_deploy_state(state)
+    end
+
+    def clear_pending_deploy(cert_name, target)
+      state = load_deploy_state
+      state['pending_deploys'].reject! { |e| e['cert_name'] == cert_name && e['target']['host'] == target['host'] }
+      save_deploy_state(state)
+    end
+
     def certificate_needs_renewal?(cert_config, days_threshold: 30)
       cert_name = cert_config['name'] || cert_config['domains'].first
       cert_path = File.join(@config.cert_dir, cert_name, 'cert.pem')
@@ -573,6 +755,27 @@ module CertManager
         end
       else
         puts "  Status: NOT ISSUED"
+      end
+
+      if cert_config['deploy']&.any?
+        state = load_deploy_state
+        pending = state['pending_deploys'].select { |e| e['cert_name'] == cert_name }
+
+        puts "  Deploy targets:"
+        cert_config['deploy'].each do |target|
+          action = target['action'] || 'reload'
+          line = "    - #{target['user']}@#{target['host']}:#{target['path']} (#{action} #{target['service']})"
+
+          failed = pending.find { |e| e['target']['host'] == target['host'] }
+          if failed
+            line += " DEPLOY FAILED"
+            puts line
+            puts "      Last failure: #{failed['failed_at']}"
+            puts "      Error: #{failed['last_error']}"
+          else
+            puts line
+          end
+        end
       end
     end
 
@@ -650,11 +853,18 @@ module CertManager
 
       # Certificates to manage
       certificates:
-        # Production certificate (uses default environment)
+        # Production certificate with deployment to target hosts
         - name: internal-server
           domains:
             - internal.example.com
           dns_provider: cloudflare_main
+          # Deploy cert files to remote hosts via SSH after obtaining/renewing
+          # deploy:
+          #   - user: deploy
+          #     host: web1.example.com
+          #     path: /etc/ssl/certs/example.com
+          #     service: nginx
+          #     action: reload    # reload (default) or restart
 
         # Wildcard certificate
         - name: wildcard-internal

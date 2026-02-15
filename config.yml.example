@@ -81,11 +81,23 @@ dns_providers:
 # Certificates to manage
 # Each certificate defines domains, the DNS provider to use, and optional settings
 certificates:
-  # Basic single-domain certificate
+  # Basic single-domain certificate with deployment to target hosts
   - name: webserver
     domains:
       - www.example.com
     dns_provider: cloudflare_dns
+    # Deploy certificates to remote hosts via SSH after obtaining/renewing
+    # Each target copies fullchain.pem and privkey.pem, then reloads the service
+    deploy:
+      - user: deploy
+        host: web1.example.com
+        path: /etc/ssl/certs/example.com
+        service: nginx
+        action: reload        # reload (default) or restart
+      - user: deploy
+        host: web2.example.com
+        path: /etc/ssl/certs/example.com
+        service: nginx
 
   # Certificate with multiple domains (SAN)
   - name: multi-domain
