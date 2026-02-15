@@ -96,10 +96,24 @@ certificates:
         key_path: /etc/ssl/private/example.com.key  # optional
         service: nginx
         action: reload        # reload (default) or restart
+        # sudo: false         # omit or set true (default) to use sudo
       - user: deploy
         host: web2.example.com
         path: /etc/ssl/certs/example.com.crt
         service: nginx
+
+  # Local deploy (no SSH, copies files directly on this machine)
+  # Useful when cert_manager runs on the same host as the web server
+  - name: local-server
+    domains:
+      - local.example.com
+    dns_provider: cloudflare_dns
+    deploy:
+      - local: true
+        path: /etc/ssl/certs/local.example.com.crt
+        key_path: /etc/ssl/private/local.example.com.key
+        service: nginx
+        sudo: false           # set false when running as root or paths are user-writable
 
   # Certificate with multiple domains (SAN)
   - name: multi-domain

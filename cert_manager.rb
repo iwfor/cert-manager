@@ -96,7 +96,13 @@ module CertManager
       end
 
       deploy_targets.each_with_index do |target, i|
-        %w[user host service path].each do |field|
+        required = if target['local']
+                     %w[service path]
+                   else
+                     %w[user host service path]
+                   end
+
+        required.each do |field|
           unless target[field] && !target[field].to_s.empty?
             raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} missing '#{field}'"
           end
@@ -187,12 +193,14 @@ module CertManager
         target = entry['target']
         host = target['host']
 
+        dest = target['local'] ? 'localhost' : "#{target['user']}@#{host}"
+
         if @dry_run
-          @logger.info("[DRY RUN] Would retry deploy of '#{cert_name}' to #{target['user']}@#{host}")
+          @logger.info("[DRY RUN] Would retry deploy of '#{cert_name}' to #{dest}")
           next
         end
 
-        @logger.info("Retrying deploy of '#{cert_name}' to #{target['user']}@#{host}")
+        @logger.info("Retrying deploy of '#{cert_name}' to #{dest}")
 
         begin
           deploy_single_target(cert_name, target)
@@ -618,20 +626,30 @@ module CertManager
       cert_name = cert_config['name'] || cert_config['domains'].first
 
       cert_config['deploy'].each do |target|
-        host = target['host']
-        remote = "#{target['user']}@#{host}"
+        sudo = target.fetch('sudo', true) != false ? 'sudo ' : ''
+        action = target['action'] || 'reload'
 
         if @dry_run
-          action = target['action'] || 'reload'
-          @logger.info("[DRY RUN] Would deploy to #{remote}")
-          @logger.info("[DRY RUN]   scp fullchain.pem -> #{remote}:/tmp/")
-          @logger.info("[DRY RUN]   sudo cp /tmp/fullchain.pem #{target['path']}")
-          if target['key_path']
-            @logger.info("[DRY RUN]   scp privkey.pem -> #{remote}:/tmp/")
-            @logger.info("[DRY RUN]   sudo cp /tmp/privkey.pem #{target['key_path']}")
-            @logger.info("[DRY RUN]   sudo chmod 0600 #{target['key_path']}")
+          if target['local']
+            @logger.info("[DRY RUN] Would deploy locally")
+            @logger.info("[DRY RUN]   #{sudo}cp fullchain.pem #{target['path']}")
+            if target['key_path']
+              @logger.info("[DRY RUN]   #{sudo}cp privkey.pem #{target['key_path']}")
+              @logger.info("[DRY RUN]   #{sudo}chmod 0600 #{target['key_path']}")
+            end
+            @logger.info("[DRY RUN]   #{sudo}systemctl #{action} #{target['service']}")
+          else
+            remote = "#{target['user']}@#{target['host']}"
+            @logger.info("[DRY RUN] Would deploy to #{remote}")
+            @logger.info("[DRY RUN]   scp fullchain.pem -> #{remote}:/tmp/")
+            @logger.info("[DRY RUN]   #{sudo}cp /tmp/fullchain.pem #{target['path']}")
+            if target['key_path']
+              @logger.info("[DRY RUN]   scp privkey.pem -> #{remote}:/tmp/")
+              @logger.info("[DRY RUN]   #{sudo}cp /tmp/privkey.pem #{target['key_path']}")
+              @logger.info("[DRY RUN]   #{sudo}chmod 0600 #{target['key_path']}")
+            end
+            @logger.info("[DRY RUN]   #{sudo}systemctl #{action} #{target['service']}")
           end
-          @logger.info("[DRY RUN]   sudo systemctl #{action} #{target['service']}")
           next
         end
 
@@ -648,23 +666,57 @@ module CertManager
 
     def deploy_single_target(cert_name, target)
       cert_dir = File.join(@config.cert_dir, cert_name)
-      user = target['user']
-      host = target['host']
       path = target['path']
       key_path = target['key_path']
       service = target['service']
       action = target['action'] || 'reload'
+      sudo = target.fetch('sudo', true) != false ? 'sudo ' : ''
+
+      if target['local']
+        deploy_local(cert_dir, path, key_path, service, action, sudo)
+      else
+        deploy_remote(cert_dir, target, path, key_path, service, action, sudo)
+      end
+
+      true
+    end
+
+    def deploy_local(cert_dir, path, key_path, service, action, sudo)
+      @logger.info("Deploying certificate locally to #{path}")
+      run_deploy_cmd(
+        ['sh', '-c', "#{sudo}cp #{File.join(cert_dir, 'fullchain.pem')} #{path}"],
+        "Failed to install certificate to #{path}"
+      )
+
+      if key_path
+        @logger.info("Deploying private key locally to #{key_path}")
+        run_deploy_cmd(
+          ['sh', '-c', "#{sudo}cp #{File.join(cert_dir, 'privkey.pem')} #{key_path} && #{sudo}chmod 0600 #{key_path}"],
+          "Failed to install private key to #{key_path}"
+        )
+      end
+
+      @logger.info("Running: #{sudo}systemctl #{action} #{service}")
+      run_deploy_cmd(
+        ['sh', '-c', "#{sudo}systemctl #{action} #{service}"],
+        "Failed to #{action} #{service}"
+      )
+    end
+
+    def deploy_remote(cert_dir, target, path, key_path, service, action, sudo)
+      user = target['user']
+      host = target['host']
       remote = "#{user}@#{host}"
 
       ssh_opts = %w[-o StrictHostKeyChecking=accept-new -o BatchMode=yes]
 
-      # Upload cert to temp, then sudo cp into place
+      # Upload cert to temp, then cp into place
       tmp_cert = "/tmp/cert_manager_fullchain_#{$$}.pem"
       scp_cert = ['scp', *ssh_opts,
                   File.join(cert_dir, 'fullchain.pem'),
                   "#{remote}:#{tmp_cert}"]
       install_cert = ['ssh', *ssh_opts, remote,
-                      "sudo cp #{tmp_cert} #{path} && rm -f #{tmp_cert}"]
+                      "#{sudo}cp #{tmp_cert} #{path} && rm -f #{tmp_cert}"]
 
       @logger.info("Deploying certificate to #{remote}:#{path}")
       run_deploy_cmd(scp_cert, "Failed to upload certificate to #{remote}")
@@ -677,7 +729,7 @@ module CertManager
                    File.join(cert_dir, 'privkey.pem'),
                    "#{remote}:#{tmp_key}"]
         install_key = ['ssh', *ssh_opts, remote,
-                       "sudo cp #{tmp_key} #{key_path} && sudo chmod 0600 #{key_path} && rm -f #{tmp_key}"]
+                       "#{sudo}cp #{tmp_key} #{key_path} && #{sudo}chmod 0600 #{key_path} && rm -f #{tmp_key}"]
 
         @logger.info("Deploying private key to #{remote}:#{key_path}")
         run_deploy_cmd(scp_key, "Failed to upload private key to #{remote}")
@@ -685,11 +737,9 @@ module CertManager
       end
 
       # Reload/restart the service
-      service_cmd = ['ssh', *ssh_opts, remote, "sudo systemctl #{action} #{service}"]
-      @logger.info("Running: sudo systemctl #{action} #{service}")
+      service_cmd = ['ssh', *ssh_opts, remote, "#{sudo}systemctl #{action} #{service}"]
+      @logger.info("Running: #{sudo}systemctl #{action} #{service}")
       run_deploy_cmd(service_cmd, "Failed to #{action} #{service} on #{host}")
-
-      true
     end
 
     def run_deploy_cmd(cmd, error_message)
@@ -718,12 +768,17 @@ module CertManager
       File.write(deploy_state_path, JSON.pretty_generate(state))
     end
 
+    def deploy_host_key(target)
+      target['local'] ? 'localhost' : target['host']
+    end
+
     def record_failed_deploy(cert_name, target, error_message)
       state = load_deploy_state
       pending = state['pending_deploys']
 
       # Update existing entry or add new one, keyed by cert_name + host
-      existing = pending.find { |e| e['cert_name'] == cert_name && e['target']['host'] == target['host'] }
+      host_key = deploy_host_key(target)
+      existing = pending.find { |e| e['cert_name'] == cert_name && deploy_host_key(e['target']) == host_key }
       if existing
         existing['failed_at'] = Time.now.utc.iso8601
         existing['last_error'] = error_message
@@ -741,7 +796,8 @@ module CertManager
 
     def clear_pending_deploy(cert_name, target)
       state = load_deploy_state
-      state['pending_deploys'].reject! { |e| e['cert_name'] == cert_name && e['target']['host'] == target['host'] }
+      host_key = deploy_host_key(target)
+      state['pending_deploys'].reject! { |e| e['cert_name'] == cert_name && deploy_host_key(e['target']) == host_key }
       save_deploy_state(state)
     end
 
@@ -802,9 +858,10 @@ module CertManager
         cert_config['deploy'].each do |target|
           action = target['action'] || 'reload'
           key_info = target['key_path'] ? " + key:#{target['key_path']}" : ""
-          line = "    - #{target['user']}@#{target['host']}:#{target['path']}#{key_info} (#{action} #{target['service']})"
+          dest = target['local'] ? "localhost" : "#{target['user']}@#{target['host']}"
+          line = "    - #{dest}:#{target['path']}#{key_info} (#{action} #{target['service']})"
 
-          failed = pending.find { |e| e['target']['host'] == target['host'] }
+          failed = pending.find { |e| deploy_host_key(e['target']) == deploy_host_key(target) }
           if failed
             line += " DEPLOY FAILED"
             puts line

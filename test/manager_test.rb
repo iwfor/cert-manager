@@ -264,6 +264,64 @@ class ManagerTest < Test::Unit::TestCase
     assert_equal 1, state['pending_deploys'].length
   end
 
+  # --- deploy (dry run) local ---
+
+  def test_deploy_dry_run_local_target
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'local' => true, 'path' => '/etc/ssl/cert.pem',
+            'key_path' => '/etc/ssl/key.pem', 'service' => 'nginx' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    # Should not raise; dry run logs local commands
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/locally/, output)
+    assert_match(/sudo cp/, output)
+    assert_match(/sudo chmod/, output)
+    assert_match(/sudo systemctl reload nginx/, output)
+  end
+
+  def test_deploy_dry_run_local_without_sudo
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'local' => true, 'path' => '/etc/ssl/cert.pem',
+            'service' => 'nginx', 'sudo' => false }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/locally/, output)
+    assert_no_match(/sudo/, output)
+    assert_match(/cp fullchain\.pem/, output)
+    assert_match(/systemctl reload nginx/, output)
+  end
+
+  def test_deploy_dry_run_remote_without_sudo
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'nginx', 'sudo' => false }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/deploy@web1/, output)
+    assert_no_match(/sudo/, output)
+  end
+
   # --- certificate_needs_renewal? ---
 
   def test_needs_renewal_when_cert_missing

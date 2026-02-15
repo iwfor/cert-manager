@@ -5,6 +5,7 @@ require 'tmpdir'
 require 'fileutils'
 require 'json'
 require 'yaml'
+require 'stringio'
 
 # Load the cert_manager module without executing the CLI block
 require_relative '../cert_manager'
@@ -32,6 +33,21 @@ module TestFixtures
     path = File.join(dir, 'config.yml')
     File.write(path, YAML.dump(config))
     path
+  end
+
+  # Capture all output written to STDOUT (including Logger)
+  def capture_output
+    reader, writer = IO.pipe
+    original = STDOUT.dup
+    STDOUT.reopen(writer)
+    $stdout = STDOUT
+    yield
+    STDOUT.reopen(original)
+    $stdout = STDOUT
+    writer.close
+    reader.read
+  ensure
+    reader&.close unless reader&.closed?
   end
 
   # Create a Manager with quiet + dry_run defaults pointing at a temp config

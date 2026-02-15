@@ -112,6 +112,62 @@ class ConfigTest < Test::Unit::TestCase
     assert_equal 1, config.certificates.first['deploy'].length
   end
 
+  def test_accepts_local_deploy_without_user_and_host
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'local', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'local' => true, 'path' => '/etc/ssl/cert.pem',
+            'service' => 'nginx' }
+        ] }
+    ])
+    config = CertManager::Config.new(path)
+    assert_equal 1, config.certificates.first['deploy'].length
+  end
+
+  def test_local_deploy_still_requires_service_and_path
+    %w[service path].each do |field|
+      target = { 'local' => true, 'path' => '/etc/ssl/cert.pem', 'service' => 'nginx' }
+      target.delete(field)
+
+      path = write_config(@tmpdir, 'certificates' => [
+        { 'name' => 'bad', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+          'deploy' => [target] }
+      ])
+
+      assert_raise(CertManager::ConfigError, "Should reject local target missing '#{field}'") do
+        CertManager::Config.new(path)
+      end
+    end
+  end
+
+  def test_remote_deploy_still_requires_user_and_host
+    %w[user host].each do |field|
+      target = { 'user' => 'u', 'host' => 'h', 'service' => 'nginx', 'path' => '/p' }
+      target.delete(field)
+
+      path = write_config(@tmpdir, 'certificates' => [
+        { 'name' => 'bad', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+          'deploy' => [target] }
+      ])
+
+      assert_raise(CertManager::ConfigError, "Should reject remote target missing '#{field}'") do
+        CertManager::Config.new(path)
+      end
+    end
+  end
+
+  def test_accepts_sudo_false
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'ok', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'nginx', 'sudo' => false }
+        ] }
+    ])
+    config = CertManager::Config.new(path)
+    assert_equal false, config.certificates.first['deploy'].first['sudo']
+  end
+
   def test_environment_override
     path = write_config(@tmpdir, 'environment' => 'staging')
     config = CertManager::Config.new(path)
