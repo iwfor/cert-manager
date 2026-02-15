@@ -191,6 +191,12 @@ Options:
 
 ## DNS Provider Setup
 
+* Cloudflare - tested working
+* Dreamhost - tested working
+* AWS Route 53 - to be tested
+* GCP Cloud DNS - to be tested
+* DNS Made Easy - to be tested
+
 ### Cloudflare
 
 1. Go to https://dash.cloudflare.com/profile/api-tokens
