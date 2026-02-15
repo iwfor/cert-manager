@@ -139,8 +139,8 @@ Flags:
 
 ## Deploying Certificates
 
-Certificates can be automatically deployed to remote hosts via SSH after being
-requested or renewed. Add a `deploy` section to any certificate in your config:
+Certificates can be automatically deployed after being requested or renewed.
+Add a `deploy` section to any certificate in your config:
 
 ```yaml
 certificates:
@@ -152,16 +152,87 @@ certificates:
       - user: deploy
         host: web1.example.com
         path: /etc/ssl/certs/myserver.crt
-        key_path: /etc/ssl/private/myserver.key  # optional
+        key_path: /etc/ssl/private/myserver.key
         service: nginx
-        action: reload    # reload (default) or restart
+        action: reload
 ```
 
-- **path** — destination for the certificate file (fullchain.pem)
-- **key_path** — optional destination for the private key (privkey.pem), set to `0600` permissions
-- Files are uploaded to `/tmp` first, then installed with `sudo cp` so they can be owned by root
+### Deploy target options
+
+| Option | Required | Default | Description |
+|--------|----------|---------|-------------|
+| `service` | yes | — | Service type: `nginx`, `apache`, or `copy` |
+| `path` | yes | — | Destination for the certificate (fullchain.pem) |
+| `user` | remote | — | SSH user for remote deploys |
+| `host` | remote | — | SSH host for remote deploys |
+| `local` | no | `false` | Set `true` to deploy on the local machine (no SSH) |
+| `key_path` | no | — | Separate destination for the private key (`0600` permissions) |
+| `append_key` | no | `false` | Append the private key to the cert file for a combined PEM |
+| `action` | no | `reload` | `reload` or `restart` (ignored for `copy`) |
+| `service_name` | no | varies | Override the systemd unit name (see service types below) |
+| `sudo` | no | `true` | Set `false` to run commands without `sudo` |
+| `custom_command` | no | — | Arbitrary command to run after copying (`copy` service only) |
+
+### Service types
+
+- **`nginx`** — reloads/restarts the `nginx` systemd unit
+- **`apache`** — reloads/restarts the `apache2` systemd unit. Set `service_name: httpd` on RHEL/CentOS distributions
+- **`copy`** — copies files only, with no service restart. Use `custom_command` to run your own reload logic
+
+### Local deploy
+
+Deploy certificates on the same machine without SSH. Omit `user` and `host`:
+
+```yaml
+deploy:
+  - local: true
+    path: /etc/ssl/certs/myserver.crt
+    key_path: /etc/ssl/private/myserver.key
+    service: nginx
+    sudo: false    # useful when running as root
+```
+
+### Combined PEM file
+
+Some services (e.g., HAProxy) require the certificate and private key in a
+single file. Use `append_key` to append the key after the certificate:
+
+```yaml
+deploy:
+  - user: deploy
+    host: lb1.example.com
+    path: /etc/haproxy/certs/myserver.pem
+    append_key: true
+    service: copy
+    custom_command: sudo systemctl reload haproxy
+```
+
+You can use `append_key` together with `key_path` to deploy the key to both
+the combined file and a separate location.
+
+### Custom command
+
+For services not managed by systemd, use the `copy` service type with
+`custom_command`:
+
+```yaml
+deploy:
+  - user: deploy
+    host: proxy.example.com
+    path: /etc/ssl/certs/myserver.crt
+    key_path: /etc/ssl/private/myserver.key
+    service: copy
+    custom_command: sudo /usr/local/bin/reload-proxy
+```
+
+On remote targets, the command runs via SSH. On local targets, it runs directly.
+
+### SSH and sudo
+
+- Remote deploys upload files to `/tmp` first, then install with `cp`
 - SSH runs in batch mode (no interactive password prompts)
-- The deploy user must have passwordless `sudo` for `cp`, `chmod`, and `systemctl`
+- By default, `cp`, `chmod`, and `systemctl` are run with `sudo`
+- Set `sudo: false` when running as root or when target paths are user-writable
 
 Example sudoers entry for the deploy user:
 
