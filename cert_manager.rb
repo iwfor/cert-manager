@@ -153,6 +153,24 @@ module CertManager
       request_certificate(cert_config)
     end
 
+    # Deploy a certificate to its configured targets
+    def deploy(cert_name)
+      cert_config = find_certificate(cert_name)
+      raise "Certificate '#{cert_name}' not found in configuration" unless cert_config
+
+      unless cert_config['deploy']&.any?
+        raise "Certificate '#{cert_name}' has no deploy targets configured"
+      end
+
+      actual_name = cert_config['name'] || cert_config['domains'].first
+      cert_path = File.join(@config.cert_dir, actual_name, 'cert.pem')
+      unless File.exist?(cert_path) || @dry_run
+        raise "Certificate files not found for '#{cert_name}' — request or renew first"
+      end
+
+      deploy_certificate(cert_config)
+    end
+
     # Retry any previously failed deploys from the state file
     def retry_failed_deploys
       state = load_deploy_state
@@ -605,9 +623,15 @@ module CertManager
 
         if @dry_run
           action = target['action'] || 'reload'
-          @logger.info("[DRY RUN] Would deploy to #{remote}:#{target['path']}/")
-          @logger.info("[DRY RUN]   scp fullchain.pem privkey.pem -> #{remote}:#{target['path']}/")
-          @logger.info("[DRY RUN]   ssh #{remote} sudo systemctl #{action} #{target['service']}")
+          @logger.info("[DRY RUN] Would deploy to #{remote}")
+          @logger.info("[DRY RUN]   scp fullchain.pem -> #{remote}:/tmp/")
+          @logger.info("[DRY RUN]   sudo cp /tmp/fullchain.pem #{target['path']}")
+          if target['key_path']
+            @logger.info("[DRY RUN]   scp privkey.pem -> #{remote}:/tmp/")
+            @logger.info("[DRY RUN]   sudo cp /tmp/privkey.pem #{target['key_path']}")
+            @logger.info("[DRY RUN]   sudo chmod 0600 #{target['key_path']}")
+          end
+          @logger.info("[DRY RUN]   sudo systemctl #{action} #{target['service']}")
           next
         end
 
@@ -627,39 +651,52 @@ module CertManager
       user = target['user']
       host = target['host']
       path = target['path']
+      key_path = target['key_path']
       service = target['service']
       action = target['action'] || 'reload'
       remote = "#{user}@#{host}"
 
       ssh_opts = %w[-o StrictHostKeyChecking=accept-new -o BatchMode=yes]
 
-      scp_cmd = ['scp', ssh_opts,
-                 File.join(cert_dir, 'fullchain.pem'),
-                 File.join(cert_dir, 'privkey.pem'),
-                 "#{remote}:#{path}/"].flatten
-      ssh_cmd = ['ssh', *ssh_opts, remote, "sudo systemctl #{action} #{service}"]
+      # Upload cert to temp, then sudo cp into place
+      tmp_cert = "/tmp/cert_manager_fullchain_#{$$}.pem"
+      scp_cert = ['scp', *ssh_opts,
+                  File.join(cert_dir, 'fullchain.pem'),
+                  "#{remote}:#{tmp_cert}"]
+      install_cert = ['ssh', *ssh_opts, remote,
+                      "sudo cp #{tmp_cert} #{path} && rm -f #{tmp_cert}"]
 
-      @logger.info("Deploying certificate to #{remote}:#{path}/")
+      @logger.info("Deploying certificate to #{remote}:#{path}")
+      run_deploy_cmd(scp_cert, "Failed to upload certificate to #{remote}")
+      run_deploy_cmd(install_cert, "Failed to install certificate to #{path} on #{host}")
 
-      if @verbose
-        puts "Deploy command: #{scp_cmd.join(' ')}"
+      # Upload private key if key_path is configured
+      if key_path
+        tmp_key = "/tmp/cert_manager_privkey_#{$$}.pem"
+        scp_key = ['scp', *ssh_opts,
+                   File.join(cert_dir, 'privkey.pem'),
+                   "#{remote}:#{tmp_key}"]
+        install_key = ['ssh', *ssh_opts, remote,
+                       "sudo cp #{tmp_key} #{key_path} && sudo chmod 0600 #{key_path} && rm -f #{tmp_key}"]
+
+        @logger.info("Deploying private key to #{remote}:#{key_path}")
+        run_deploy_cmd(scp_key, "Failed to upload private key to #{remote}")
+        run_deploy_cmd(install_key, "Failed to install private key to #{key_path} on #{host}")
       end
 
-      unless system(*scp_cmd)
-        raise "Failed to copy certificate files to #{remote}:#{path}/ (exit code: #{$?.exitstatus})"
-      end
-
-      @logger.info("Certificate files copied, running: sudo systemctl #{action} #{service}")
-
-      if @verbose
-        puts "Deploy command: #{ssh_cmd.join(' ')}"
-      end
-
-      unless system(*ssh_cmd)
-        raise "Failed to #{action} #{service} on #{host} (exit code: #{$?.exitstatus})"
-      end
+      # Reload/restart the service
+      service_cmd = ['ssh', *ssh_opts, remote, "sudo systemctl #{action} #{service}"]
+      @logger.info("Running: sudo systemctl #{action} #{service}")
+      run_deploy_cmd(service_cmd, "Failed to #{action} #{service} on #{host}")
 
       true
+    end
+
+    def run_deploy_cmd(cmd, error_message)
+      puts "Deploy command: #{cmd.join(' ')}" if @verbose
+      unless system(*cmd)
+        raise "#{error_message} (exit code: #{$?.exitstatus})"
+      end
     end
 
     def deploy_state_path
@@ -764,7 +801,8 @@ module CertManager
         puts "  Deploy targets:"
         cert_config['deploy'].each do |target|
           action = target['action'] || 'reload'
-          line = "    - #{target['user']}@#{target['host']}:#{target['path']} (#{action} #{target['service']})"
+          key_info = target['key_path'] ? " + key:#{target['key_path']}" : ""
+          line = "    - #{target['user']}@#{target['host']}:#{target['path']}#{key_info} (#{action} #{target['service']})"
 
           failed = pending.find { |e| e['target']['host'] == target['host'] }
           if failed
@@ -913,6 +951,7 @@ if __FILE__ == $PROGRAM_NAME
     opts.separator ""
     opts.separator "Commands:"
     opts.separator "  request <name>    Request a new certificate"
+    opts.separator "  deploy <name>     Deploy certificate to configured targets"
     opts.separator "  renew [name]      Renew certificate(s) due for renewal"
     opts.separator "  revoke <name>     Revoke a certificate"
     opts.separator "  cleanup <name>    Remove leftover ACME challenge DNS records"
@@ -1000,6 +1039,27 @@ if __FILE__ == $PROGRAM_NAME
         verbose: options[:verbose]
       )
       manager.request(cert_name)
+    rescue StandardError => e
+      puts "Error: #{e.message}"
+      exit 1
+    end
+
+  when 'deploy'
+    cert_name = ARGV.shift
+    unless cert_name
+      puts "Error: Certificate name required"
+      puts "Usage: #{$PROGRAM_NAME} deploy <cert_name>"
+      exit 1
+    end
+
+    begin
+      manager = CertManager::Manager.new(
+        config_path: options[:config],
+        dry_run: options[:dry_run],
+        quiet: options[:quiet],
+        verbose: options[:verbose]
+      )
+      manager.deploy(cert_name)
     rescue StandardError => e
       puts "Error: #{e.message}"
       exit 1

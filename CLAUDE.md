@@ -29,9 +29,4 @@ Let's Encrypt Cert Manager
 │       ├── route53.rb           # AWS Route 53
 │       ├── cloud_dns.rb         # Google Cloud DNS
 │       └── dnsmadeeasy.rb       # DNS Made Easy
-└── live/                        # Certbot data directory (gitignored)
-    ├── accounts/                # ACME account registrations
-    ├── archive/                 # Certificate archive
-    ├── live/                    # Current certificate symlinks
-    └── renewal/                 # Renewal configuration
 ```

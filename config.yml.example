@@ -87,16 +87,18 @@ certificates:
       - www.example.com
     dns_provider: cloudflare_dns
     # Deploy certificates to remote hosts via SSH after obtaining/renewing
-    # Each target copies fullchain.pem and privkey.pem, then reloads the service
+    # Each target copies fullchain.pem to the path, then reloads the service
+    # Optionally set key_path to also copy privkey.pem
     deploy:
       - user: deploy
         host: web1.example.com
-        path: /etc/ssl/certs/example.com
+        path: /etc/ssl/certs/example.com.crt
+        key_path: /etc/ssl/private/example.com.key  # optional
         service: nginx
         action: reload        # reload (default) or restart
       - user: deploy
         host: web2.example.com
-        path: /etc/ssl/certs/example.com
+        path: /etc/ssl/certs/example.com.crt
         service: nginx
 
   # Certificate with multiple domains (SAN)
