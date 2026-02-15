@@ -89,6 +89,12 @@ certificates:
     # Deploy certificates to remote hosts via SSH after obtaining/renewing
     # Each target copies fullchain.pem to the path, then reloads the service
     # Optionally set key_path to also copy privkey.pem
+    #
+    # Supported service types:
+    #   nginx  - reloads the 'nginx' systemd unit (default action: reload)
+    #   apache - reloads the 'apache2' systemd unit; set service_name for
+    #            distros that use 'httpd' (default action: reload)
+    #   copy   - copies files only, no service restart
     deploy:
       - user: deploy
         host: web1.example.com
@@ -102,6 +108,19 @@ certificates:
         path: /etc/ssl/certs/example.com.crt
         service: nginx
 
+  # Apache deploy with custom service name (e.g. RHEL/CentOS uses 'httpd')
+  - name: apache-server
+    domains:
+      - apache.example.com
+    dns_provider: cloudflare_dns
+    deploy:
+      - user: deploy
+        host: web3.example.com
+        path: /etc/ssl/certs/apache.example.com.crt
+        key_path: /etc/ssl/private/apache.example.com.key
+        service: apache
+        service_name: httpd   # optional, defaults to 'apache2'
+
   # Local deploy (no SSH, copies files directly on this machine)
   # Useful when cert_manager runs on the same host as the web server
   - name: local-server
@@ -114,6 +133,19 @@ certificates:
         key_path: /etc/ssl/private/local.example.com.key
         service: nginx
         sudo: false           # set false when running as root or paths are user-writable
+
+  # Copy-only deploy (no service restart)
+  # Useful when another process handles the reload, or for backup/archival
+  - name: copy-only
+    domains:
+      - backup.example.com
+    dns_provider: cloudflare_dns
+    deploy:
+      - user: deploy
+        host: backup.example.com
+        path: /etc/ssl/certs/backup.example.com.crt
+        key_path: /etc/ssl/private/backup.example.com.key
+        service: copy
 
   # Certificate with multiple domains (SAN)
   - name: multi-domain

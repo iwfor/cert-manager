@@ -83,7 +83,7 @@ class ConfigTest < Test::Unit::TestCase
   def test_rejects_unsupported_deploy_service
     path = write_config(@tmpdir, 'certificates' => [
       { 'name' => 'bad', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
-        'deploy' => [{ 'user' => 'u', 'host' => 'h', 'path' => '/p', 'service' => 'apache' }] }
+        'deploy' => [{ 'user' => 'u', 'host' => 'h', 'path' => '/p', 'service' => 'tomcat' }] }
     ])
     assert_raise(CertManager::ConfigError) do
       CertManager::Config.new(path)
@@ -154,6 +154,42 @@ class ConfigTest < Test::Unit::TestCase
         CertManager::Config.new(path)
       end
     end
+  end
+
+  def test_accepts_apache_service
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'ok', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'apache' }
+        ] }
+    ])
+    config = CertManager::Config.new(path)
+    assert_equal 'apache', config.certificates.first['deploy'].first['service']
+  end
+
+  def test_accepts_apache_with_service_name
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'ok', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'apache', 'service_name' => 'httpd' }
+        ] }
+    ])
+    config = CertManager::Config.new(path)
+    assert_equal 'httpd', config.certificates.first['deploy'].first['service_name']
+  end
+
+  def test_accepts_copy_service
+    path = write_config(@tmpdir, 'certificates' => [
+      { 'name' => 'ok', 'domains' => ['x.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'copy' }
+        ] }
+    ])
+    config = CertManager::Config.new(path)
+    assert_equal 'copy', config.certificates.first['deploy'].first['service']
   end
 
   def test_accepts_sudo_false

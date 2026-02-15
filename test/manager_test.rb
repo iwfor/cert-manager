@@ -322,6 +322,80 @@ class ManagerTest < Test::Unit::TestCase
     assert_no_match(/sudo/, output)
   end
 
+  # --- deploy (dry run) copy service ---
+
+  def test_deploy_dry_run_copy_skips_systemctl
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'copy' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/deploy@web1/, output)
+    assert_match(/cp.*fullchain/, output)
+    assert_no_match(/systemctl/, output)
+  end
+
+  def test_deploy_dry_run_copy_local
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'local' => true, 'path' => '/etc/ssl/cert.pem',
+            'key_path' => '/etc/ssl/key.pem', 'service' => 'copy' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/locally/, output)
+    assert_match(/cp fullchain/, output)
+    assert_match(/cp privkey/, output)
+    assert_no_match(/systemctl/, output)
+  end
+
+  # --- deploy (dry run) apache service ---
+
+  def test_deploy_dry_run_apache_defaults_to_apache2
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'apache' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/systemctl reload apache2/, output)
+  end
+
+  def test_deploy_dry_run_apache_with_httpd_service_name
+    certs = [
+      { 'name' => 'webserver', 'domains' => ['www.example.com'], 'dns_provider' => 'test_cf',
+        'deploy' => [
+          { 'user' => 'deploy', 'host' => 'web1', 'path' => '/etc/ssl/cert.pem',
+            'service' => 'apache', 'service_name' => 'httpd' }
+        ] }
+    ]
+    path = write_config(@tmpdir, 'certificates' => certs)
+    manager = build_manager(path, dry_run: true, quiet: false)
+    FileUtils.mkdir_p(File.join(@tmpdir, 'certbot'))
+
+    output = capture_output { manager.deploy('webserver') }
+    assert_match(/systemctl reload httpd/, output)
+    assert_no_match(/apache2/, output)
+  end
+
   # --- certificate_needs_renewal? ---
 
   def test_needs_renewal_when_cert_missing
