@@ -12,6 +12,7 @@ require 'logger'
 require 'time'
 
 require_relative 'lib/dns_providers'
+require_relative 'lib/file_permissions'
 
 module CertManager
   VERSION = '1.0.0'
@@ -50,6 +51,8 @@ module CertManager
         raise ConfigError, "Configuration file not found: #{@path}\n" \
                            "Run with --init to create a sample configuration."
       end
+
+      FilePermissions.check(@path)
 
       config = YAML.safe_load(File.read(@path), permitted_classes: [Symbol])
 
@@ -135,6 +138,7 @@ module CertManager
         end
       end
     end
+
   end
 
   class ConfigError < StandardError; end

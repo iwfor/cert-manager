@@ -7,6 +7,7 @@
 require 'yaml'
 require 'optparse'
 require_relative 'lib/dns_providers'
+require_relative 'lib/file_permissions'
 
 options = {
   config: File.expand_path('~/.config/cert_manager/config.yml'),
@@ -80,6 +81,7 @@ unless File.exist?(options[:config])
   exit 1
 end
 
+CertManager::FilePermissions.check(options[:config])
 config = YAML.safe_load(File.read(options[:config]))
 
 unless config['dns_providers']&.key?(options[:provider])

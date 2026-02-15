@@ -21,6 +21,7 @@ Let's Encrypt Cert Manager
 ├── config.yml.example           # Sample configuration file
 ├── test_dns_provider.rb         # DNS provider test script
 ├── lib/
+│   ├── file_permissions.rb      # Shared config file permissions check
 │   ├── dns_providers.rb         # Provider loader and factory
 │   └── dns_providers/
 │       ├── base.rb              # Base class for all DNS providers
