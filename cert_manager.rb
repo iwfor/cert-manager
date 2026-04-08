@@ -762,12 +762,13 @@ module CertManager
           next
         end
 
+        dest = target['local'] ? 'localhost' : "#{target['user']}@#{target['host']}"
         begin
           deploy_single_target(cert_name, target)
           clear_pending_deploy(cert_name, target)
-          @logger.info("Successfully deployed to #{host}")
+          @logger.info("Successfully deployed to #{dest}")
         rescue StandardError => e
-          @logger.warn("Deploy failed for #{cert_name} -> #{host}: #{e.message}")
+          @logger.warn("Deploy failed for #{cert_name} -> #{dest}: #{e.message}")
           record_failed_deploy(cert_name, target, e.message)
         end
       end
