@@ -10,6 +10,8 @@ require 'fileutils'
 require 'optparse'
 require 'logger'
 require 'time'
+require 'openssl'
+require 'digest'
 
 require_relative 'lib/dns_providers'
 require_relative 'lib/file_permissions'
@@ -188,7 +190,9 @@ module CertManager
     end
 
     # Deploy a certificate to its configured targets
-    def deploy(cert_name)
+    # @param cert_name [String] Certificate name or primary domain
+    # @param force [Boolean] If true, clear any recorded failure state before deploying
+    def deploy(cert_name, force: false)
       cert_config = find_certificate(cert_name)
       raise "Certificate '#{cert_name}' not found in configuration" unless cert_config
 
@@ -197,9 +201,15 @@ module CertManager
       end
 
       actual_name = cert_name_for(cert_config)
-      cert_path = File.join(@config.cert_dir, actual_name, 'cert.pem')
+      active_name = resolve_active_cert_name(actual_name)
+      cert_path = File.join(@config.cert_dir, active_name, 'cert.pem')
       unless File.exist?(cert_path) || @dry_run
         raise "Certificate files not found for '#{cert_name}' — request or renew first"
+      end
+
+      if force
+        clear_all_pending_deploys(actual_name)
+        @logger.info("Cleared recorded failure state for '#{actual_name}'")
       end
 
       deploy_certificate(cert_config)
@@ -454,6 +464,46 @@ module CertManager
       cert_config['name'] || cert_config['domains'].first
     end
 
+    # Find the cert directory that actually holds the newest certificate.
+    # Certbot may create suffixed directories (e.g. eng-0006) when it can't
+    # renew in place; this returns whichever name (the configured one, or a
+    # "<name>-NNNN" sibling) has the cert.pem with the latest expiry.
+    # Memoized per-instance so the warning only logs once per cert.
+    def resolve_active_cert_name(cert_name)
+      @resolved_cert_names ||= {}
+      return @resolved_cert_names[cert_name] if @resolved_cert_names.key?(cert_name)
+
+      prefix = "#{cert_name}-"
+      suffixed = if Dir.exist?(@config.cert_dir)
+                   Dir.entries(@config.cert_dir).select do |entry|
+                     entry.start_with?(prefix) &&
+                       entry[prefix.length..] =~ /\A\d+\z/ &&
+                       File.directory?(File.join(@config.cert_dir, entry))
+                   end
+                 else
+                   []
+                 end
+
+      candidates = [cert_name] + suffixed
+      with_expiry = candidates.filter_map do |name|
+        cert_path = File.join(@config.cert_dir, name, 'cert.pem')
+        next unless File.exist?(cert_path)
+        expiry = get_certificate_expiry(cert_path)
+        [name, expiry] if expiry
+      end
+
+      newest_name = with_expiry.empty? ? cert_name : with_expiry.max_by { |_, e| e }.first
+
+      if newest_name != cert_name
+        @logger.warn("Active cert for '#{cert_name}' is in '#{newest_name}/' — " \
+                     "certbot created a suffixed directory instead of renewing in place.")
+        @logger.warn("Consolidate with: certbot rename --cert-name #{newest_name} " \
+                     "--new-name #{cert_name} --config-dir #{@config.config_dir}")
+      end
+
+      @resolved_cert_names[cert_name] = newest_name
+    end
+
     # Calculate fractional days remaining until an expiry time
     # @param expiry [Time] Certificate expiry time
     # @return [Float] Days until expiry (negative if expired)
@@ -574,11 +624,11 @@ module CertManager
       ]
 
       cmd += ['--email', @config.email] if @config.email
-      cmd += ['--cert-name', cert_config['name']] if cert_config['name']
+      cmd += ['--cert-name', cert_name_for(cert_config)]
       cmd += domain_args
 
-      # Reuse existing private key if configured
-      cmd << '--reuse-key' if cert_config['reuse_key']
+      # Reuse existing private key by default; opt out with reuse_key: false
+      cmd << '--reuse-key' if cert_config.fetch('reuse_key', true)
 
       # Set ACME server based on environment
       if environment == :staging
@@ -602,10 +652,45 @@ module CertManager
       }
       env['CERT_MANAGER_DNS_ALIAS'] = dns_alias if dns_alias
 
+      # Record the cert serial before certbot runs so we can detect if it changed
+      cert_name = cert_name_for(cert_config)
+      cert_path = File.join(@config.cert_dir, cert_name, 'fullchain.pem')
+      old_serial = begin
+        OpenSSL::X509::Certificate.new(File.read(File.realpath(cert_path))).serial
+      rescue StandardError
+        nil
+      end
+
       success = system(env, *cmd)
 
       unless success
         raise "Certbot command failed with exit code: #{$?.exitstatus}"
+      end
+
+      # Verify certbot actually updated the cert at the expected path.
+      # Certbot silently creates a new cert name (e.g. eng-0001) when it hits a
+      # naming conflict, leaving the old cert at the original path untouched.
+      begin
+        new_serial = OpenSSL::X509::Certificate.new(File.read(File.realpath(cert_path))).serial
+        if old_serial && new_serial == old_serial
+          # Cert at expected path didn't change — certbot likely renamed it
+          suffixed = Dir[File.join(@config.cert_dir, "#{cert_name}-*")]
+            .select { |d| File.directory?(d) }
+            .sort
+          hint = if suffixed.any?
+                   latest = File.basename(suffixed.last)
+                   "Found '#{latest}' which may be the renewed cert. " \
+                   "Run: certbot rename --cert-name #{latest} --new-name #{cert_name} " \
+                   "--config-dir #{@config.config_dir}"
+                 else
+                   "Check: certbot certificates --config-dir #{@config.config_dir}"
+                 end
+          raise "Certbot succeeded but the certificate at #{cert_path} was not updated. " \
+                "Certbot may have created a duplicate cert with a suffixed name. #{hint}"
+        end
+      rescue Errno::ENOENT
+        raise "Certbot succeeded but no certificate found at #{cert_path}. " \
+              "Check: certbot certificates --config-dir #{@config.config_dir}"
       end
 
       deploy_certificate(cert_config) if cert_config['deploy']&.any?
@@ -779,7 +864,9 @@ module CertManager
     # @param target [Hash] Deploy target configuration
     # @return [Boolean] true on success
     def deploy_single_target(cert_name, target)
-      cert_dir = File.join(@config.cert_dir, cert_name)
+      active_name = resolve_active_cert_name(cert_name)
+      cert_dir = File.join(@config.cert_dir, active_name)
+      warn_if_stale_live_symlink(cert_dir, active_name)
       path = target['path']
       key_path = target['key_path']
       append_key = target['append_key']
@@ -863,17 +950,29 @@ module CertManager
 
       ssh_opts = %w[-o StrictHostKeyChecking=accept-new -o BatchMode=yes]
 
-      # Upload cert to temp, then cp into place
-      tmp_cert = "/tmp/cert_manager_fullchain_#{$$}.pem"
-      scp_cert = ['scp', *ssh_opts,
-                  File.join(cert_dir, 'fullchain.pem'),
-                  "#{remote}:#{tmp_cert}"]
-      install_cert = ['ssh', *ssh_opts, remote,
-                      "#{sudo}cp #{tmp_cert} #{path} && rm -f #{tmp_cert}"]
+      # Resolve symlink so we deploy the actual archive file, not a dangling reference
+      cert_file = File.realpath(File.join(cert_dir, 'fullchain.pem'))
+      local_cert = OpenSSL::X509::Certificate.new(File.read(cert_file))
+      serial_hex = local_cert.serial.to_s(16).upcase
+      local_hash = Digest::SHA256.file(cert_file).hexdigest
+      @logger.info("Deploying #{cert_file} to #{remote}:#{path} " \
+                   "(serial=#{serial_hex}, expires=#{local_cert.not_after.strftime('%Y-%m-%d')}, " \
+                   "sha256=#{local_hash[0..15]})")
 
-      @logger.info("Deploying certificate to #{remote}:#{path}")
+      # Upload cert to temp, then install into place.
+      # Uses 'install' instead of 'cp': install unlinks the destination first,
+      # so it replaces symlinks with a new regular file rather than writing
+      # through them to a potentially stale target.
+      tmp_cert = "/tmp/cert_manager_fullchain_#{$$}.pem"
+      scp_cert = ['scp', *ssh_opts, cert_file, "#{remote}:#{tmp_cert}"]
+      install_cert = ['ssh', *ssh_opts, remote,
+                      "#{sudo}install -m 0644 #{tmp_cert} #{path} && rm -f #{tmp_cert}"]
+
       run_deploy_cmd(scp_cert, "Failed to upload certificate to #{remote}")
       run_deploy_cmd(install_cert, "Failed to install certificate to #{path} on #{host}")
+
+      # Verify the installed file content matches what we deployed
+      verify_remote_file(remote, path, local_hash, ssh_opts, sudo, host)
 
       # Append private key to cert file if configured
       if append_key
@@ -918,6 +1017,86 @@ module CertManager
           "Custom command failed on #{host}"
         )
       end
+    end
+
+    # Warn if the live symlink points to a stale cert or to a non-standard archive location.
+    # Catches two cases:
+    #   1. A newer numbered archive file exists alongside the one the symlink points to.
+    #   2. The symlink resolves into a non-standard location (e.g. inside live/ instead of
+    #      next to it), while a standard certbot archive exists at the expected path.
+    # @param cert_dir [String] Path to the live cert directory (e.g. live/example.com)
+    # @param cert_name [String] Certificate name for log messages
+    def warn_if_stale_live_symlink(cert_dir, cert_name)
+      live_link = File.join(cert_dir, 'fullchain.pem')
+      return unless File.symlink?(live_link)
+
+      real = File.realpath(live_link)
+      archive_dir = File.dirname(real)
+      base = File.basename(real)             # e.g. fullchain3.pem
+      prefix = base.sub(/\d+\.pem$/, '')    # e.g. "fullchain"
+      current_num = base[/(\d+)\.pem$/, 1]&.to_i
+      return unless current_num
+
+      # Check for a newer archive file in the same directory the symlink resolves to
+      newest_same = Dir[File.join(archive_dir, "#{prefix}*.pem")]
+        .map { |f| File.basename(f)[/(\d+)\.pem$/, 1]&.to_i }
+        .compact.max
+
+      if newest_same && newest_same > current_num
+        @logger.warn("Live symlink for '#{cert_name}' points to #{base} but " \
+                     "#{prefix}#{newest_same}.pem exists in the same archive — " \
+                     "the symlink may not have been updated after renewal.")
+      end
+
+      # Check whether the symlink resolves into the standard certbot archive location.
+      # cert_dir is live/CERT_NAME; two levels up is the certbot config_dir.
+      standard_archive = File.join(File.dirname(File.dirname(cert_dir)), 'archive', cert_name)
+      return unless Dir.exist?(standard_archive)
+      return if real.start_with?(File.expand_path(standard_archive) + File::SEPARATOR)
+
+      # The live symlink doesn't point into the standard archive — warn and show what's there
+      newest_standard = Dir[File.join(standard_archive, "#{prefix}*.pem")]
+        .map { |f| File.basename(f)[/(\d+)\.pem$/, 1]&.to_i }
+        .compact.max
+
+      if newest_standard
+        @logger.warn("Live symlink for '#{cert_name}' resolves to #{real}")
+        @logger.warn("  but the standard certbot archive has #{prefix}#{newest_standard}.pem at #{standard_archive}/")
+        @logger.warn("  The cert was likely renewed into the standard archive but the live symlink was not updated.")
+        @logger.warn("  Fix with:")
+        @logger.warn("    cd #{cert_dir}")
+        %w[cert chain fullchain privkey].each do |name|
+          src = File.join(standard_archive, "#{name}#{newest_standard}.pem")
+          @logger.warn("    ln -sf ../../archive/#{cert_name}/#{name}#{newest_standard}.pem #{name}.pem") if File.exist?(src)
+        end
+      end
+    end
+
+    # Verify that the file installed on a remote host has the expected content by
+    # comparing SHA-256 hashes. Raises on mismatch so the deploy is recorded as failed.
+    # @param remote [String] "user@host"
+    # @param path [String] Remote file path to verify
+    # @param expected_hash [String] Hex SHA-256 hash of the local source file
+    # @param ssh_opts [Array<String>] SSH options
+    # @param sudo [String] 'sudo ' or ''
+    # @param host [String] Hostname for error messages
+    def verify_remote_file(remote, path, expected_hash, ssh_opts, sudo, host)
+      cmd = ['ssh', *ssh_opts, remote, "#{sudo}sha256sum #{path}"]
+      output = IO.popen(cmd, &:read)
+      unless $?.success?
+        raise "Could not verify installed file on #{host}: sha256sum failed (exit #{$?.exitstatus})"
+      end
+
+      remote_hash = output.strip.split(/\s+/).first&.downcase
+
+      unless remote_hash == expected_hash
+        raise "Certificate content verification failed on #{host}: " \
+              "installed file hash #{remote_hash} does not match local hash #{expected_hash}. " \
+              "The file at #{path} was not updated — check whether the path is a symlink or " \
+              "a config management tool is overwriting it."
+      end
+
+      @logger.info("Certificate content verified on #{host} (sha256=#{remote_hash[0..15]})")
     end
 
     # Execute a deploy command, raising on failure
@@ -996,6 +1175,14 @@ module CertManager
       state = load_deploy_state
       host_key = deploy_host_key(target)
       state['pending_deploys'].reject! { |e| e['cert_name'] == cert_name && deploy_host_key(e['target']) == host_key }
+      save_deploy_state(state)
+    end
+
+    # Remove all recorded failures for a certificate (used by force deploy)
+    # @param cert_name [String] Certificate name
+    def clear_all_pending_deploys(cert_name)
+      state = load_deploy_state
+      state['pending_deploys'].reject! { |e| e['cert_name'] == cert_name }
       save_deploy_state(state)
     end
 
@@ -1214,7 +1401,7 @@ if __FILE__ == $PROGRAM_NAME
     opts.separator ""
     opts.separator "Commands:"
     opts.separator "  request <name>    Request a new certificate"
-    opts.separator "  deploy <name>     Deploy certificate to configured targets"
+    opts.separator "  deploy <name>     Deploy certificate to configured targets (use -f to clear failure state)"
     opts.separator "  renew [name]      Renew certificate(s) due for renewal"
     opts.separator "  revoke <name>     Revoke a certificate"
     opts.separator "  cleanup <name>    Remove leftover ACME challenge DNS records"
@@ -1232,7 +1419,7 @@ if __FILE__ == $PROGRAM_NAME
       options[:dry_run] = true
     end
 
-    opts.on('-f', '--force', 'Force renewal even if not due') do
+    opts.on('-f', '--force', 'Force renewal even if not due; with deploy, clears recorded failure state') do
       options[:force] = true
     end
 
@@ -1320,9 +1507,10 @@ if __FILE__ == $PROGRAM_NAME
         config_path: options[:config],
         dry_run: options[:dry_run],
         quiet: options[:quiet],
+        skip_prompts: options[:yes],
         verbose: options[:verbose]
       )
-      manager.deploy(cert_name)
+      manager.deploy(cert_name, force: options[:force])
     rescue StandardError => e
       puts "Error: #{e.message}"
       exit 1
