@@ -87,18 +87,46 @@ module CertManager
         raise ConfigError, "No DNS providers configured"
       end
 
+      @dns_providers.each do |name, provider_config|
+        unless provider_config.is_a?(Hash)
+          raise ConfigError, "DNS provider '#{name}' has no configuration (expected a mapping with 'type' and credentials)"
+        end
+        unless provider_config['type']
+          raise ConfigError, "DNS provider '#{name}' is missing required 'type' field"
+        end
+      end
+
       @certificates.each_with_index do |cert, i|
         unless cert.is_a?(Hash)
           raise ConfigError, "Certificate ##{i + 1} is not a valid mapping (got #{cert.inspect})"
         end
 
-        unless cert['domains']&.any?
-          raise ConfigError, "Certificate missing 'domains' field"
+        cert_label = "Certificate ##{i + 1}#{" ('#{cert['name']}')" if cert['name']}"
+
+        unless cert['domains'].is_a?(Array) && cert['domains'].any?
+          raise ConfigError, "#{cert_label} is missing a 'domains' list"
+        end
+
+        cert['domains'].each_with_index do |domain, j|
+          unless domain.is_a?(String) && !domain.strip.empty?
+            raise ConfigError, "#{cert_label}: domain ##{j + 1} is not a valid string (got #{domain.inspect})"
+          end
         end
 
         provider = cert['dns_provider']
+        unless provider.is_a?(String) && !provider.strip.empty?
+          raise ConfigError, "#{cert_label} is missing required 'dns_provider' field"
+        end
         unless @dns_providers.key?(provider)
-          raise ConfigError, "Certificate references unknown provider: #{provider}"
+          raise ConfigError, "#{cert_label} references unknown dns_provider: '#{provider}' (configured: #{@dns_providers.keys.join(', ')})"
+        end
+
+        if cert['environment'] && !%w[staging production].include?(cert['environment'].to_s)
+          raise ConfigError, "#{cert_label}: invalid environment '#{cert['environment']}' (must be 'staging' or 'production')"
+        end
+
+        if cert['dns_alias'] && !(cert['dns_alias'].is_a?(String) && !cert['dns_alias'].strip.empty?)
+          raise ConfigError, "#{cert_label}: 'dns_alias' must be a non-empty string"
         end
 
         validate_deploy_config(cert['name'] || cert['domains'].first, cert['deploy']) if cert['deploy']
@@ -133,22 +161,36 @@ module CertManager
                      %w[user host service path]
                    end
 
+        tgt = "Certificate '#{cert_name}': deploy target ##{i + 1}"
+
         required.each do |field|
-          unless target[field] && !target[field].to_s.empty?
-            raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} missing '#{field}'"
+          unless target[field] && !target[field].to_s.strip.empty?
+            raise ConfigError, "#{tgt} missing '#{field}'"
           end
         end
 
         unless SUPPORTED_DEPLOY_SERVICES.include?(target['service'])
-          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} unsupported service '#{target['service']}' (supported: #{SUPPORTED_DEPLOY_SERVICES.join(', ')})"
+          raise ConfigError, "#{tgt} unsupported service '#{target['service']}' (supported: #{SUPPORTED_DEPLOY_SERVICES.join(', ')})"
+        end
+
+        unless target['path'].to_s.start_with?('/')
+          raise ConfigError, "#{tgt} 'path' must be an absolute path (got '#{target['path']}')"
+        end
+
+        if target['key_path'] && !(target['key_path'].is_a?(String) && target['key_path'].start_with?('/'))
+          raise ConfigError, "#{tgt} 'key_path' must be an absolute path (got '#{target['key_path']}')"
         end
 
         if target['action'] && !SUPPORTED_DEPLOY_ACTIONS.include?(target['action'])
-          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} unsupported action '#{target['action']}' (supported: #{SUPPORTED_DEPLOY_ACTIONS.join(', ')})"
+          raise ConfigError, "#{tgt} unsupported action '#{target['action']}' (supported: #{SUPPORTED_DEPLOY_ACTIONS.join(', ')})"
+        end
+
+        if target['port'] && !target['port'].is_a?(Integer)
+          raise ConfigError, "#{tgt} 'port' must be an integer (got #{target['port'].inspect})"
         end
 
         if target['custom_command'] && target['service'] != 'copy'
-          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} custom_command is only supported with service 'copy'"
+          raise ConfigError, "#{tgt} custom_command is only supported with service 'copy'"
         end
       end
     end

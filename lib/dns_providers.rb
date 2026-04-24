@@ -127,7 +127,13 @@ module CertManager
         providers = {}
 
         config.each do |name, provider_config|
+          unless provider_config.is_a?(Hash)
+            raise ArgumentError, "DNS provider '#{name}' has no configuration (expected a mapping with 'type' and credentials)"
+          end
           type = provider_config['type']
+          unless type
+            raise ArgumentError, "DNS provider '#{name}' is missing required 'type' field"
+          end
           credentials = provider_config.reject { |k, _| k == 'type' }
 
           providers[name] = create(type, name, credentials)
