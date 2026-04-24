@@ -58,6 +58,10 @@ module CertManager
 
       config = YAML.safe_load(File.read(@path), permitted_classes: [Symbol])
 
+      unless config.is_a?(Hash)
+        raise ConfigError, "Configuration file is empty or invalid: #{@path}"
+      end
+
       @dns_providers = config['dns_providers'] || {}
       @certificates = config['certificates'] || []
       @certbot_path = config['certbot_path'] || 'certbot'
@@ -83,7 +87,11 @@ module CertManager
         raise ConfigError, "No DNS providers configured"
       end
 
-      @certificates.each do |cert|
+      @certificates.each_with_index do |cert, i|
+        unless cert.is_a?(Hash)
+          raise ConfigError, "Certificate ##{i + 1} is not a valid mapping (got #{cert.inspect})"
+        end
+
         unless cert['domains']&.any?
           raise ConfigError, "Certificate missing 'domains' field"
         end
@@ -115,6 +123,10 @@ module CertManager
       end
 
       deploy_targets.each_with_index do |target, i|
+        unless target.is_a?(Hash)
+          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} is not a valid mapping (got #{target.inspect})"
+        end
+
         required = if target['local']
                      %w[service path]
                    else
