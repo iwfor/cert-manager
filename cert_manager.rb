@@ -155,17 +155,29 @@ module CertManager
           raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} is not a valid mapping (got #{target.inspect})"
         end
 
-        required = if target['local']
-                     %w[service path]
-                   else
-                     %w[user host service path]
-                   end
-
         tgt = "Certificate '#{cert_name}': deploy target ##{i + 1}"
 
-        required.each do |field|
-          unless target[field] && !target[field].to_s.strip.empty?
-            raise ConfigError, "#{tgt} missing '#{field}'"
+        if target['local']
+          %w[user host port].each do |field|
+            if target.key?(field)
+              raise ConfigError, "#{tgt}: '#{field}' is not valid for local deploy targets"
+            end
+          end
+
+          %w[service path].each do |field|
+            unless target[field].is_a?(String) && !target[field].strip.empty?
+              raise ConfigError, "#{tgt} missing required field '#{field}'"
+            end
+          end
+        else
+          %w[user host service path].each do |field|
+            unless target[field].is_a?(String) && !target[field].strip.empty?
+              raise ConfigError, "#{tgt} missing required field '#{field}'"
+            end
+          end
+
+          if target['port'] && !target['port'].is_a?(Integer)
+            raise ConfigError, "#{tgt} 'port' must be an integer (got #{target['port'].inspect})"
           end
         end
 
@@ -185,8 +197,12 @@ module CertManager
           raise ConfigError, "#{tgt} unsupported action '#{target['action']}' (supported: #{SUPPORTED_DEPLOY_ACTIONS.join(', ')})"
         end
 
-        if target['port'] && !target['port'].is_a?(Integer)
-          raise ConfigError, "#{tgt} 'port' must be an integer (got #{target['port'].inspect})"
+        if target.key?('sudo') && ![true, false].include?(target['sudo'])
+          raise ConfigError, "#{tgt} 'sudo' must be true or false (got #{target['sudo'].inspect})"
+        end
+
+        if target.key?('append_key') && ![true, false].include?(target['append_key'])
+          raise ConfigError, "#{tgt} 'append_key' must be true or false (got #{target['append_key'].inspect})"
         end
 
         if target['custom_command'] && target['service'] != 'copy'
