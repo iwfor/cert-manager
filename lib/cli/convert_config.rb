@@ -50,9 +50,18 @@ module CertManager
       def read_v1(source)
         FilePermissions.check(source)
         doc = Config.read_document(source)
-        raise "#{source} is already a v2 configuration; nothing to convert" if doc.fetch('version', 1) != 1
+        version = doc.fetch('version', 1)
+        return doc if version == 1
 
-        doc
+        if version == Config::CURRENT_VERSION
+          raise "#{source} is already a v2 configuration, so there is nothing to convert.\n" \
+                "To use it, nothing more is needed: pass it with `-c #{source}` or set $#{Config::ENV_VAR}, " \
+                "or rename it to #{Config::DEFAULT_CONFIG_PATH} (the name looked up by default).\n" \
+                "To convert a v1 file, point at it with `#{CLI.program} -c /path/to/config.yml convert-config`."
+        end
+
+        raise "Unsupported config version #{version.inspect} in #{source} (convert-config reads version 1 files; " \
+              "v2 files need no conversion). Check the `version:` key."
       end
 
       def confirm_overwrite(dest)
