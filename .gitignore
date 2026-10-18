@@ -1,5 +1,9 @@
-# Configuration (contains secrets)
+# Configuration and encryption key (secrets)
 config.yml
+config.v2.yml
+config.v2.yml.*.bak
+config.v2.yml.lock
+cert-manager.key
 
 # Ruby
 *.gem

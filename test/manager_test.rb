@@ -588,4 +588,47 @@ class ManagerTest < Test::Unit::TestCase
 
     assert_equal [['webserver', true]], captured
   end
+  def test_hook_scripts_live_in_a_private_directory
+    Dir.mktmpdir do |dir|
+      manager = build_manager(write_config(dir))
+      path = manager.send(:write_temp_script, 'x.rb', "puts 1\n")
+      assert_equal 0o700, File.stat(File.dirname(path)).mode & 0o777
+      assert_equal 0o700, File.stat(path).mode & 0o777
+      assert_raise(Errno::EEXIST) { manager.send(:write_temp_script, 'x.rb', 'again') }
+      manager.send(:remove_hook_dir)
+      assert !File.exist?(path)
+    end
+  end
+
+  def test_cleanup_targets_the_alias_zone_and_strips_wildcards
+    Dir.mktmpdir do |dir|
+      path = write_config(dir, 'certificates' => [
+        { 'name' => 'w', 'domains' => ['*.example.com', 'example.com'], 'dns_provider' => 'test_cf' },
+        { 'name' => 'a', 'domains' => ['x.internal.local'], 'dns_provider' => 'test_cf', 'dns_alias' => '_acme-challenge.acme.example.org' }
+      ])
+      calls = []
+      provider = Object.new
+      provider.define_singleton_method(:cleanup_challenge_records) { |domain| calls << domain; 0 }
+      manager = build_manager(path)
+      manager.instance_variable_set(:@providers, { 'test_cf' => provider })
+      manager.cleanup('w')
+      manager.cleanup('a')
+      assert_equal %w[example.com acme.example.org], calls
+    end
+  end
+  def test_generated_hook_scripts_are_valid_ruby_and_use_the_state_dir
+    require 'open3'
+    Dir.mktmpdir do |dir|
+      manager = build_manager(write_config(dir))
+      provider = manager.instance_variable_get(:@providers)['test_cf']
+      [manager.send(:auth_hook_script, provider, nil), manager.send(:cleanup_hook_script, provider, nil)].each do |script|
+        _, err, status = Open3.capture3(RbConfig.ruby, '-c', script)
+        assert status.success?, err
+        text = File.read(script)
+        assert_include text, 'CERT_MANAGER_STATE_DIR'
+        assert_no_match(%r{/tmp/certbot_record_}, text)
+      end
+      manager.send(:remove_hook_dir)
+    end
+  end
 end

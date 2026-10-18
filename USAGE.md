@@ -6,29 +6,38 @@ This document covers configuring CertManager for new sites, deploying certificat
 
 ## Configuring a New Site
 
-### 1. Initialize the configuration file
+### 1. Initialize the configuration
 
 ```bash
-./cert_manager.rb init
+./cert_manager.rb init --email admin@example.com
 ```
 
-This creates `~/.config/cert_manager/config.yml`. Alternatively, copy `config.yml.example` and customize it.
+This creates `~/.config/cert_manager/config.v2.yml` and the encryption key `cert-manager.key` next to it (both mode `0600`).
+Coming from the old `config.yml`? Run `./cert_manager.rb convert-config` instead; see [Migrating from v1](#migrating-from-v1).
 
-### 2. Configure a DNS provider
+### 2. Add a DNS provider and its zones
 
-Add at least one DNS provider under `dns_providers`. See [DNS Provider Setup](#dns-provider-setup) below for credential requirements.
+```bash
+./cert_manager.rb add-provider cloudflare_dns --type cloudflare --zone mysite.com
+```
+
+You are asked for the API token with a hidden prompt; it is verified against the provider and stored encrypted.
+See [DNS Provider Setup](#dns-provider-setup) below for what each provider needs. Zones can be changed later with
+`add-zone` / `remove-zone`, and a key replaced with `update-provider-key`.
 
 ### 3. Add a certificate entry
 
-Under `certificates`, add a block for each site. The minimum required fields:
+Under `certificates` in `config.v2.yml`, add a block for each site. The minimum required fields:
 
 ```yaml
 certificates:
   - name: mysite
     domains:
       - www.mysite.com
-    dns_provider: cloudflare_dns
 ```
+
+The provider is chosen automatically: it is the one with the longest zone matching the domains (here `mysite.com`).
+Add `dns_provider: NAME` to a certificate to force a specific provider.
 
 ### 4. Test with staging
 
@@ -67,112 +76,28 @@ cert name) — add `--force` to make certbot reissue anyway:
 
 ## DNS Provider Setup
 
-### Cloudflare
+Each provider is added with `add-provider NAME --type TYPE`. Secrets are asked for with a hidden prompt (or supplied with
+`--key-stdin` / `--key-env VAR`; never as command-line arguments). Non-secret settings are passed with `--set KEY=VALUE`.
 
-1. Create a token at https://dash.cloudflare.com/profile/api-tokens with **Zone.DNS Edit** permission
-2. Add to config:
+| Provider | `--type` | Prompted secrets | Non-secret settings (`--set`) | Notes |
+| -------- | -------- | ---------------- | ----------------------------- | ----- |
+| Cloudflare | `cloudflare` | `api_token` | `zone_id` (optional; pins the provider to one zone) | Token from https://dash.cloudflare.com/profile/api-tokens with **Zone.DNS Edit** |
+| Dreamhost | `dreamhost` | `api_key` | | Key from https://panel.dreamhost.com/index.cgi?tree=home.api with **dns-\*** permissions |
+| AWS Route 53 | `route53` | none (`secret_access_key` optional) | `hosted_zone_id` (required), `access_key_id`, `region` | `gem install aws-sdk-route53`; without keys the SDK credential chain is used. Serves one zone. Add the optional secret with `update-provider-key NAME --credential secret_access_key` |
+| GCP Cloud DNS | `cloud_dns` | none | `project_id`, `managed_zone` (required), `credentials_file` | `gem install google-apis-dns_v1 googleauth`; uses Application Default Credentials without `credentials_file`. Serves one zone |
+| DNS Made Easy | `dnsmadeeasy` | `api_key`, then `secret_key` | `sandbox=true` | Credentials from https://dnsmadeeasy.com/ account settings |
+| DigitalOcean | `digitalocean` | `api_token` | | Token with **read/write** scope: https://cloud.digitalocean.com/account/api/tokens |
+| Linode (Akamai) | `linode` | `api_token` | | Token with **Domains: Read/Write**: https://cloud.linode.com/profile/tokens |
+| Namecheap | `namecheap` | `api_key` | `api_user`, `client_ip` (required) | Enable API access and whitelist your IP: https://www.namecheap.com/support/api/intro/ |
 
-```yaml
-dns_providers:
-  cloudflare_dns:
-    type: cloudflare
-    api_token: your-token
-```
+Examples:
 
-### Dreamhost
-
-1. Create an API key at https://panel.dreamhost.com/index.cgi?tree=home.api with **dns-*** permissions
-2. Add to config:
-
-```yaml
-dns_providers:
-  dreamhost_dns:
-    type: dreamhost
-    api_key: your-api-key
-```
-
-### AWS Route 53
-
-1. Install the AWS SDK: `gem install aws-sdk-route53`
-2. Get your Hosted Zone ID from the Route 53 console
-3. Create an IAM user/role with `route53:ChangeResourceRecordSets` and `route53:ListResourceRecordSets` permissions
-4. Add to config:
-
-```yaml
-dns_providers:
-  route53_dns:
-    type: route53
-    hosted_zone_id: Z1234567890ABC
-```
-
-If you omit `access_key_id` and `secret_access_key`, the SDK uses the standard credential chain (environment variables, `~/.aws/credentials`, or IAM role).
-
-### GCP Cloud DNS
-
-1. Install the gems: `gem install google-apis-dns_v1 googleauth`
-2. Create a Cloud DNS managed zone or note your existing zone name
-3. Create a service account with **DNS Administrator** role
-4. Add to config:
-
-```yaml
-dns_providers:
-  gcp_dns:
-    type: cloud_dns
-    project_id: my-project-123
-    managed_zone: my-zone-name
-    credentials_file: /path/to/service-account.json  # optional; uses ADC if omitted
-```
-
-### DNS Made Easy
-
-1. Generate API credentials at https://dnsmadeeasy.com/ account settings
-2. Add to config:
-
-```yaml
-dns_providers:
-  dnsmadeeasy_dns:
-    type: dnsmadeeasy
-    api_key: your-api-key
-    secret_key: your-secret-key
-    # sandbox: true  # use the sandbox API for testing
-```
-
-### DigitalOcean
-
-1. Create a token with **read/write** scope at https://cloud.digitalocean.com/account/api/tokens
-2. Add to config:
-
-```yaml
-dns_providers:
-  digitalocean_dns:
-    type: digitalocean
-    api_token: your-token
-```
-
-### Linode (Akamai)
-
-1. Create a token with **Domains: Read/Write** scope at https://cloud.linode.com/profile/tokens
-2. Add to config:
-
-```yaml
-dns_providers:
-  linode_dns:
-    type: linode
-    api_token: your-token
-```
-
-### Namecheap
-
-1. Enable API access at https://www.namecheap.com/support/api/intro/ and whitelist your IP
-2. Add to config:
-
-```yaml
-dns_providers:
-  namecheap_dns:
-    type: namecheap
-    api_key: your-api-key
-    api_user: your-username
-    client_ip: 1.2.3.4
+```bash
+./cert_manager.rb add-provider cloudflare_dns --type cloudflare --zone example.com --zone example.net
+./cert_manager.rb add-provider aws --type route53 --set hosted_zone_id=Z1234567890ABC --zone example.org
+./cert_manager.rb add-provider nc --type namecheap --set api_user=me --set client_ip=1.2.3.4 --zone example.io
+./cert_manager.rb update-provider-key cloudflare_dns --key-env NEW_CF_TOKEN
+./cert_manager.rb list-providers
 ```
 
 ---
@@ -186,9 +111,10 @@ certificates:
   - name: internal-server
     domains:
       - server.internal.local
-    dns_provider: cloudflare_dns
     dns_alias: _acme-challenge.acme.example.com
 ```
+
+The provider is selected by the zone of the alias (`acme.example.com`), because that is where the TXT record is created.
 
 Then in your public DNS for `acme.example.com`:
 
@@ -211,7 +137,6 @@ certificates:
   - name: myserver
     domains:
       - www.example.com
-    dns_provider: cloudflare_dns
     deploy:
       - user: deploy
         host: web1.example.com
@@ -244,7 +169,6 @@ certificates:
   - name: local-server
     domains:
       - local.example.com
-    dns_provider: cloudflare_dns
     deploy:
       - local: true
         path: /etc/ssl/certs/local.example.com.crt
@@ -262,7 +186,6 @@ certificates:
   - name: haproxy-server
     domains:
       - ha.example.com
-    dns_provider: cloudflare_dns
     deploy:
       - user: deploy
         host: lb1.example.com
@@ -281,7 +204,6 @@ certificates:
   - name: custom-service
     domains:
       - custom.example.com
-    dns_provider: cloudflare_dns
     deploy:
       - user: deploy
         host: proxy.example.com
@@ -300,7 +222,6 @@ certificates:
   - name: shared-cert
     domains:
       - www.example.com
-    dns_provider: cloudflare_dns
     deploy:
       - host: web1.example.com
         user: deploy
@@ -375,6 +296,11 @@ Or prepend PATH to the cron entry:
 | `--quiet` | Only outputs errors - suppresses routine info messages                      |
 | `--yes`   | Skips all confirmation prompts (required for cron)                          |
 
+The cron job must run as the user that owns `~/.config/cert_manager/`, because it needs to read `cert-manager.key`
+to decrypt the API keys. If the config is elsewhere, set `CERT_MANAGER_CONFIG=/path/to/config.v2.yml` in the cron entry
+(or pass `-c`) and keep `cert-manager.key` in the same directory. While you still use a v1 `config.yml`, every run prints a
+deprecation notice to stderr, which cron will mail to you; that is your reminder to run `convert-config`.
+
 ### Verifying the cron job is running
 
 Check the system cron log:
@@ -408,10 +334,50 @@ Or redirect output to a log file:
 ./cert_manager.rb --force renew          # Force renew all certificates
 ./cert_manager.rb --staging request myserver   # Request a staging certificate
 ./cert_manager.rb --dry-run request myserver   # Preview without making changes
-./cert_manager.rb verify                 # Test DNS provider credentials
+./cert_manager.rb verify                 # Test DNS provider credentials (non-zero exit on failure)
 ./cert_manager.rb cleanup myserver       # Remove leftover ACME challenge DNS records
 ./cert_manager.rb revoke myserver        # Revoke a certificate
+./cert_manager.rb list-providers         # Providers, zones and credential status (no secrets shown)
+./cert_manager.rb help add-provider      # Help for any command
 ```
+
+---
+
+## Migrating from v1
+
+The old `config.yml` (plaintext keys, `dns_provider` on every certificate) still works but is deprecated.
+
+```bash
+./cert_manager.rb convert-config --dry-run   # preview the result; secrets are masked
+./cert_manager.rb convert-config             # write config.v2.yml + cert-manager.key
+./cert_manager.rb verify                     # check every provider with the new config
+```
+
+What the conversion does:
+
+- Moves each provider's credentials under `credentials` and encrypts the secret ones (`ENC[v1:...]`).
+- Infers each provider's `zones` from your certificates' domains (or `dns_alias` targets) and removes `dns_provider`
+  from certificates that zone routing resolves to the same provider. Certificates whose zone is shared with another provider keep `dns_provider`.
+- Copies `deploy` blocks, settings and everything else unchanged. Comments are not carried over.
+- Leaves the old file untouched. After `verify` passes, delete or archive it, since it still holds plaintext keys.
+
+Review the printed zones; use `add-zone` / `remove-zone` to adjust. Providers that no certificate used get no zones until you add some.
+`--output PATH` chooses where the v2 file is written.
+
+## Shell Completions
+
+```bash
+eval "$(./cert_manager.rb completions)"   # add to ~/.bashrc, or ~/.zshrc after compinit
+./cert_manager.rb completions bash        # or: zsh (default comes from $SHELL)
+```
+
+Commands, flags, certificate names, provider names and zones are completed. They are generated from the command definitions, so they stay current as commands are added.
+
+## The Encryption Key
+
+`cert-manager.key` (next to the config, mode `0600`) encrypts every secret in `config.v2.yml`. Back it up somewhere other than
+where you back up the config; if it is lost, re-enter the keys with `update-provider-key`. The tool refuses to read a key file that group or others can access
+(`chmod 600` it). The key keeps the config safe to copy, commit or paste, but it does not defend against another process running as the same user.
 
 ---
 
@@ -432,8 +398,17 @@ Or redirect output to a log file:
 | ---------------------- | -------- | --------------------------------------------------------------------------- |
 | name                   | no       | Display name for the certificate (defaults to the first domain)             |
 | domains                | yes      | List of domain names to include in the certificate                          |
-| dns_provider           | yes      | Provider name from `dns_providers`                                          |
+| dns_provider           | no       | Force a provider by name; by default it is resolved from the providers' `zones` |
 | dns_alias              | no       | DNS alias domain for the ACME challenge TXT record                          |
 | environment            | no       | Override default: `staging` or `production`                                 |
 | reuse_key              | no       | Reuse the existing private key on renewal (defaults to `true`)              |
 | deploy                 | no       | List of deploy targets (see Deployment Types above)                         |
+
+| Provider key (`providers.NAME`) | Required | Description                                                                 |
+| ------------------------------- | -------- | --------------------------------------------------------------------------- |
+| version (top level)             | yes      | Must be `2`                                                                 |
+| type                            | yes      | Provider type (see DNS Provider Setup)                                      |
+| credentials                     | yes      | Mapping of credential name to value; secrets are stored as `ENC[v1:...]`    |
+| zones                           | no       | Zones this provider serves; certificates are routed by longest matching zone |
+
+Manage these with `add-provider`, `update-provider-key`, `add-zone`, `remove-zone` and `remove-provider` rather than editing the file by hand.

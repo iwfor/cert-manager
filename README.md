@@ -17,6 +17,8 @@ A Ruby tool for managing Let's Encrypt certificates for internal hosts using DNS
   - Linode (Akamai)
   - Namecheap
 - DNS alias support for hosts without public DNS
+- Provider/zone management from the command line, API keys encrypted at rest
+- bash and zsh completions
 - Staging and production environments
 - Cron-friendly for automated renewals
 
@@ -33,38 +35,60 @@ A Ruby tool for managing Let's Encrypt certificates for internal hosts using DNS
    ```bash
    chmod +x cert_manager.rb
    ```
-3. Initialize configuration:
+3. Create the configuration and encryption key:
    ```bash
-   ./cert_manager.rb init
+   ./cert_manager.rb init --email admin@example.com
    ```
-4. Edit `~/.config/cert_manager/config.yml` with your DNS credentials and certificates
+4. Add your DNS provider (the API key is asked for with a hidden prompt and stored encrypted):
+   ```bash
+   ./cert_manager.rb add-provider cloudflare --type cloudflare --zone example.com
+   ```
+5. Add certificates to `~/.config/cert_manager/config.v2.yml`, then enable
+   [shell completions](#shell-completions).
+
+Upgrading from the old `config.yml`? See [Migrating from v1](#migrating-from-v1).
 
 ## Configuration
 
-Edit `~/.config/cert_manager/config.yml`:
+Files live in `~/.config/cert_manager/` (override with `-c PATH` or `$CERT_MANAGER_CONFIG`):
+
+| File | Purpose |
+|------|---------|
+| `config.v2.yml` | Providers, zones, certificates (mode `0600`) |
+| `cert-manager.key` | Key that encrypts the API keys in the config (mode `0600`) |
+
+Providers and zones are managed with commands (see [Managing providers and zones](#managing-providers-and-zones));
+certificates and deploy targets are edited in the file:
 
 ```yaml
+version: 2
 email: admin@example.com
 
-dns_providers:
+providers:
   cloudflare:
     type: cloudflare
-    api_token: your-api-token
+    credentials:
+      api_token: ENC[v1:...]      # written by add-provider, never typed by hand
+    zones:
+      - example.com
 
 certificates:
   - name: myserver
     domains:
-      - server.example.com
-    dns_provider: cloudflare
+      - server.example.com        # served by the provider whose zone matches
 ```
 
-For internal hosts that can't have public DNS records, use a DNS alias:
+A certificate is routed to the provider whose zone is the longest match for its
+domains (all domains of one certificate must resolve to the same provider). To force a
+provider, set `dns_provider: NAME` on the certificate.
+
+For internal hosts that can't have public DNS records, use a DNS alias. Routing then
+uses the alias' zone, since that is where the challenge record is placed:
 
 ```yaml
   - name: internal-host
     domains:
       - server.internal.local
-    dns_provider: cloudflare
     dns_alias: _acme-challenge.acme.example.com
 ```
 
@@ -74,7 +98,6 @@ To reuse the existing private key on renewal (useful for DANE/TLSA or key pinnin
   - name: pinned-server
     domains:
       - server.example.com
-    dns_provider: cloudflare
     reuse_key: true
 ```
 
@@ -88,7 +111,89 @@ work_dir: /path/to/certbot/work
 logs_dir: /path/to/certbot/logs
 ```
 
-## Requesting Certificates
+## Managing providers and zones
+
+```bash
+./cert_manager.rb add-provider NAME --type TYPE [--zone ZONE]...   # add a provider
+./cert_manager.rb update-provider-key NAME                         # replace its API key
+./cert_manager.rb add-zone NAME example.net                        # let it serve another zone
+./cert_manager.rb remove-zone NAME example.net
+./cert_manager.rb remove-provider NAME
+./cert_manager.rb list-providers                                   # secrets are never shown
+./cert_manager.rb help add-provider                                # every command has help
+```
+
+Secret values are never taken from the command line (they would show up in `ps` and shell
+history). They come from a hidden prompt, from stdin (`--key-stdin`, one line per secret), or
+from an environment variable (`--key-env VAR`, for a single secret):
+
+```bash
+./cert_manager.rb update-provider-key cloudflare --key-env NEW_CF_TOKEN
+pass show cloudflare/token | ./cert_manager.rb update-provider-key cloudflare --key-stdin
+```
+
+Changes are verified against the provider API before they are saved (`--no-verify` to skip,
+`--dry-run` to preview). `remove-zone` and `remove-provider` refuse if a certificate would be left
+without a provider unless you pass `--force`. Each change keeps a timestamped `.bak` of the previous file.
+Comments in `config.v2.yml` are not preserved when the tool rewrites it.
+
+Providers tied to a single zone (Route 53 `hosted_zone_id`, Cloud DNS `managed_zone`, or Cloudflare
+with `zone_id` set) serve exactly one zone; add another provider entry for each additional zone.
+
+## Security model
+
+- API keys and other secrets are encrypted in `config.v2.yml` (AES-256-GCM) as `ENC[v1:...]` values, using the
+  random key in `cert-manager.key`. The key file is created with mode `0600`; the tool refuses to use it
+  if group or others can read it.
+- This protects the config when it is copied, committed, pasted into a ticket or included in a backup
+  without the key. It does **not** protect against another process running as the same user, since the key
+  sits next to the config. Back up `cert-manager.key` separately; without it the encrypted values cannot be recovered
+  (re-enter them with `update-provider-key`).
+- Plaintext secrets written by hand are still accepted with a warning and are encrypted the next time the tool rewrites the file.
+- `list-providers`, dry runs and `test_dns_provider.rb -v` mask secrets.
+
+## Migrating from v1
+
+The old `config.yml` format (plaintext keys, `dns_provider` on every certificate) still works but prints a
+deprecation notice on every run. Convert it with:
+
+```bash
+./cert_manager.rb convert-config --dry-run   # preview; secrets are masked
+./cert_manager.rb convert-config             # writes config.v2.yml and cert-manager.key
+./cert_manager.rb verify                     # confirm the new config works
+```
+
+The conversion encrypts every API key, infers each provider's zones from your certificates, and drops
+`dns_provider` from certificates that zone routing resolves to the same provider. Certificates whose
+zone is shared with another provider keep an explicit `dns_provider`. Your old file is never modified;
+once `verify` passes, delete or archive it (it still contains plaintext keys). `config.v2.yml` takes
+precedence over `config.yml` when both exist.
+
+## Behavior changes from 1.x
+
+- `--staging` together with `--production` is now an error (it used to silently use the last one given).
+- A missing or unknown command, or a bad option, exits with status `2` (was `1`); errors go to stderr.
+- `init` creates a v2 config, needs `--email` when not run interactively, and refuses to create a v2 file next to an
+  existing `config.yml` (it would take precedence and ignore your certificates) unless you pass `--yes`; use `convert-config` instead.
+- The v1 deprecation notice is printed even with `--quiet`, so cron mails it until you convert.
+- Hook scripts and per-challenge record ids now live in a private temporary directory instead of predictable `/tmp` names.
+- With `dns_alias`, provider zone lookups (and `cleanup`) use the alias zone, which is where the challenge record is created.
+- `cleanup` and DNS lookups for wildcard domains no longer include the `*.` prefix.
+- Management commands keep the 10 most recent timestamped `.bak` files, refuse to overwrite a config that changed while they ran,
+  and write through a symlinked config file.
+
+## Shell completions
+
+Completions for bash and zsh are generated from the command definitions, so they always match the installed version:
+
+```bash
+eval "$(./cert_manager.rb completions)"          # shell taken from $SHELL
+./cert_manager.rb completions zsh                # or choose: bash | zsh
+```
+
+Add the `eval` line to `~/.bashrc`, or to `~/.zshrc` after `compinit`. For zsh you can instead save the output
+as `_cert_manager.rb` in a directory on your `$fpath`. Certificate, provider and zone names are completed
+from your configuration (honoring `-c`). Use `--program NAME` if you invoke the tool under another name.
 
 ### 1. Test with staging first
 
@@ -161,7 +266,6 @@ certificates:
   - name: myserver
     domains:
       - server.example.com
-    dns_provider: cloudflare
     deploy:
       - user: deploy
         host: web1.example.com
@@ -314,36 +418,52 @@ This finds and removes all `_acme-challenge` TXT records for the certificate's d
 
 ## CLI Reference
 
-```
-Usage: cert_manager.rb [options] <command>
+Run `cert_manager.rb help` for the full list and `cert_manager.rb help COMMAND` (or `COMMAND --help`) for details,
+options and examples of a command. Global flags may be placed before or after the command.
 
-Commands:
-  request <name>    Request a new certificate
-  deploy <name>     Deploy certificate to configured targets
-  renew [name]      Renew certificate(s) due for renewal
-  revoke <name>     Revoke a certificate
-  cleanup <name>    Remove leftover ACME challenge DNS records
-  list              List all configured certificates
-  verify            Verify DNS provider credentials
-  init              Create sample configuration file
-
-Options:
-  -c, --config PATH    Path to configuration file
-  -s, --staging        Use staging environment (test certificates)
-  -p, --production     Use production environment (real certificates)
-  -n, --dry-run        Preview without making changes
-  -f, --force          With request/renew, pass --force-renewal to certbot
-                       (reissue even if not due); with deploy, clears
-                       recorded failure state
-  -r, --reason REASON  Revocation reason (for revoke command)
-  -q, --quiet          Quiet mode (errors only)
-  -y, --yes            Skip confirmation prompts
-  -h, --help           Show help
 ```
+Certificate commands:
+  request <name>   Request a new certificate
+  deploy <name>    Deploy a certificate to its configured targets
+  renew [name]     Renew certificate(s) due for renewal
+  revoke <name>    Revoke a certificate
+  cleanup <name>   Remove leftover ACME challenge DNS records
+  list             List configured certificates and their status
+
+Configuration commands:
+  verify                          Verify DNS provider credentials
+  init                            Create a new configuration file and encryption key
+  convert-config                  Convert a v1 config.yml to the v2 format
+  add-provider <name>             Add a DNS provider (encrypts its API key)
+  update-provider-key <provider>  Replace a provider's API key
+  add-zone <provider> <zone>      Let a provider serve a DNS zone
+  remove-zone <provider> <zone>   Stop a provider serving a DNS zone
+  remove-provider <provider>      Remove a DNS provider and its stored credentials
+  list-providers                  List providers, their zones and credential status
+
+Tools:
+  completions [shell]             Print a shell completion script (bash or zsh)
+  help [command]                  Show help for a command
+
+Global options:
+  -c, --config PATH  Configuration file (default: $CERT_MANAGER_CONFIG, then config.v2.yml, then config.yml)
+  -n, --dry-run      Show what would be done without making changes
+  -f, --force        Reissue even if not due (request/renew); clear recorded failure state (deploy)
+  -s, --staging      Use Let's Encrypt staging (test certificates)
+  -p, --production   Use Let's Encrypt production (real certificates)
+  -q, --quiet        Only output errors (for cron jobs)
+  -y, --yes          Skip confirmation prompts (for automation)
+  -v, --verbose      Show extra detail
+  -V, --version      Show version
+  -h, --help         Show help
+```
+
+Exit status: `0` success, `1` error, `2` usage error (bad command line). Errors are written to stderr.
+`verify` exits non-zero when a provider rejects its credentials.
 
 ## Testing DNS Providers
 
-After configuring a DNS provider in your `config.yml` (see [DNS Provider Setup](#dns-provider-setup) below), use `test_dns_provider.rb` to verify that the API credentials are working before requesting certificates. It creates a temporary TXT record, verifies it via DNS lookup and API query, then removes it — all without involving certbot.
+After configuring a DNS provider (see [DNS Provider Setup](#dns-provider-setup) below), use `test_dns_provider.rb` to verify that the API credentials are working before requesting certificates. It creates a temporary TXT record, verifies it via DNS lookup and API query, then removes it — all without involving certbot.
 
 ### Basic test
 
@@ -366,7 +486,7 @@ This runs four tests against the provider named `cloudflare_dns` in your config:
 |------|-------------|
 | `-p, --provider NAME` | Provider name from config (required) |
 | `-d, --domain DOMAIN` | Domain to test with (required for add/remove) |
-| `-c, --config PATH` | Config file path (default: `~/.config/cert_manager/config.yml`) |
+| `-c, --config PATH` | Config file path (default: same lookup as `cert_manager.rb`) |
 | `-k, --keep` | Keep the test record instead of deleting it |
 | `-l, --list` | List existing DNS records only (requires `-d`) |
 | `-w, --wait SECONDS` | Seconds to wait for DNS propagation (default: 10) |
@@ -386,6 +506,9 @@ If the DNS verification step reports "Record not found", the record may need mor
 
 ## DNS Provider Setup
 
+Secrets (API keys and tokens) are asked for with a hidden prompt when you add a provider; see
+[Managing providers and zones](#managing-providers-and-zones) for the other ways to supply them.
+
 * Cloudflare - tested working
 * Dreamhost - tested working
 * AWS Route 53 - to be tested
@@ -399,24 +522,18 @@ If the DNS verification step reports "Record not found", the record may need mor
 
 1. Go to https://dash.cloudflare.com/profile/api-tokens
 2. Create a token with **Zone.DNS Edit** permission
-3. Add to config:
-   ```yaml
-   dns_providers:
-     cloudflare:
-       type: cloudflare
-       api_token: your-token
+3. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider cloudflare --type cloudflare --zone example.com
    ```
 
 ### Dreamhost
 
 1. Go to https://panel.dreamhost.com/index.cgi?tree=home.api
 2. Create a key with **dns-\*** permissions
-3. Add to config:
-   ```yaml
-   dns_providers:
-     dreamhost:
-       type: dreamhost
-       api_key: your-key
+3. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider dreamhost --type dreamhost --zone example.org
    ```
 
 ### AWS Route 53
@@ -424,15 +541,15 @@ If the DNS verification step reports "Record not found", the record may need mor
 1. Install the AWS SDK: `gem install aws-sdk-route53`
 2. Get your Hosted Zone ID from the Route 53 console
 3. Create an IAM user/role with `route53:ChangeResourceRecordSets` and `route53:ListResourceRecordSets` permissions
-4. Add to config:
-   ```yaml
-   dns_providers:
-     route53:
-       type: route53
-       hosted_zone_id: Z1234567890ABC
-       # Optional: explicit credentials
-       access_key_id: AKIAIOSFODNN7EXAMPLE
-       secret_access_key: your-secret-key
+4. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider route53 --type route53 --set hosted_zone_id=Z1234567890ABC --zone example.com
+   ```
+
+   To use explicit keys instead of the AWS credential chain, also pass the key id, then store the secret key:
+   ```bash
+   ./cert_manager.rb add-provider route53 --type route53 --set hosted_zone_id=Z1234567890ABC --set access_key_id=AKIA... --zone example.com
+   ./cert_manager.rb update-provider-key route53 --credential secret_access_key
    ```
 
 If you don't provide credentials, the AWS SDK will use the standard credential chain:
@@ -445,15 +562,9 @@ If you don't provide credentials, the AWS SDK will use the standard credential c
 1. Install the Google Cloud SDK: `gem install google-apis-dns_v1 googleauth`
 2. Create a Cloud DNS managed zone or note your existing zone name
 3. Create a service account with **DNS Administrator** role
-4. Add to config:
-   ```yaml
-   dns_providers:
-     gcp_dns:
-       type: cloud_dns
-       project_id: my-project-123
-       managed_zone: my-zone-name
-       # Optional: path to service account key
-       credentials_file: /path/to/service-account.json
+4. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider gcp_dns --type cloud_dns --set project_id=my-project-123 --set managed_zone=my-zone-name --set credentials_file=/path/to/service-account.json --zone example.com
    ```
 
 If you don't provide `credentials_file`, the SDK uses Application Default Credentials:
@@ -466,39 +577,29 @@ If you don't provide `credentials_file`, the SDK uses Application Default Creden
 1. Log in to your DNS Made Easy account
 2. Go to **Account** → **API Credentials**
 3. Generate an API key and Secret key
-4. Add to config:
-   ```yaml
-   dns_providers:
-     dnsmadeeasy:
-       type: dnsmadeeasy
-       api_key: your-api-key
-       secret_key: your-secret-key
+4. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider dnsmadeeasy --type dnsmadeeasy --zone example.com   # prompts for api_key, then secret_key
    ```
 
-Optional: Use `sandbox: true` to test against the DNS Made Easy sandbox environment.
+Optional: add `--set sandbox=true` to test against the DNS Made Easy sandbox environment.
 
 ### DigitalOcean
 
 1. Go to https://cloud.digitalocean.com/account/api/tokens
 2. Create a personal access token with **read/write** scope
-3. Add to config:
-   ```yaml
-   dns_providers:
-     digitalocean:
-       type: digitalocean
-       api_token: your-token
+3. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider digitalocean --type digitalocean --zone example.com
    ```
 
 ### Linode (Akamai)
 
 1. Go to https://cloud.linode.com/profile/tokens
 2. Create a personal access token with **Domains: Read/Write** scope
-3. Add to config:
-   ```yaml
-   dns_providers:
-     linode:
-       type: linode
-       api_token: your-token
+3. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider linode --type linode --zone example.com
    ```
 
 ### Namecheap
@@ -506,14 +607,9 @@ Optional: Use `sandbox: true` to test against the DNS Made Easy sandbox environm
 1. Enable API access at https://www.namecheap.com/support/api/intro/
 2. Whitelist your IP address in the API access settings
 3. Note your API key and username
-4. Add to config:
-   ```yaml
-   dns_providers:
-     namecheap:
-       type: namecheap
-       api_key: your-api-key
-       api_user: your-username
-       client_ip: 1.2.3.4
+4. Add the provider:
+   ```bash
+   ./cert_manager.rb add-provider namecheap --type namecheap --set api_user=your-username --set client_ip=1.2.3.4 --zone example.com
    ```
 
 Note: `client_ip` must match an IP whitelisted in your Namecheap API settings.

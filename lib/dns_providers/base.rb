@@ -84,6 +84,36 @@ module CertManager
         raise NotImplementedError, "#{name} must implement .required_credentials"
       end
 
+      # Credential keys that are secrets (encrypted at rest, masked in output)
+      # @return [Array<String>] List of secret credential keys
+      def self.secret_credentials
+        []
+      end
+
+      # Credential key that pins the provider to a single zone (nil when it can serve many)
+      # @return [String, nil]
+      def self.zone_credential
+        nil
+      end
+
+      # Check the credentials with a read-only API call. With zones, each zone is
+      # looked up (proving auth and that the zone exists); without, a provider
+      # listing is used when available.
+      # @param zones [Array<String>] zones configured for this provider
+      # @return [Boolean] true when verified, false when nothing could be checked
+      # @raise [DNSProviderError] when the provider rejects the request
+      def verify_credentials(zones = [])
+        if zones.any?
+          zones.each { |zone| find_txt_records(zone, "_acme-challenge.#{zone}") }
+          true
+        elsif respond_to?(:list_records)
+          list_records
+          true
+        else
+          false
+        end
+      end
+
       # Remove all ACME challenge records for a domain
       # Default implementation works for providers whose find_txt_records returns
       # records with :id or :value keys. Override for providers with custom logic.
@@ -175,21 +205,27 @@ module CertManager
         raise DNSProviderError, "HTTP request failed: #{e.message}"
       end
 
-      # Extract the root/apex domain from a full domain name
-      # Simple implementation - override for more complex TLD handling
+      # Second-level labels that act like a TLD under a country-code TLD (example.co.uk)
+      SECOND_LEVEL_LABELS = %w[co com org net gov edu ac me ltd plc].freeze
+
+      # Extract the root/apex domain from a full domain name.
+      # Heuristic (no public suffix list): the last two labels, or the last three
+      # when the TLD is a two-letter country code preceded by a common
+      # second-level label such as co/com/org.
       #
       # @param domain [String] Full domain name
       # @return [String] Root domain
-      def extract_root_domain(domain)
+      def self.root_domain(domain)
         parts = domain.split('.')
-        # Handle common two-part TLDs (co.uk, com.au, etc.)
-        if parts.length > 2 && parts[-2].length <= 3
-          parts[-3..-1].join('.')
-        elsif parts.length > 2
-          parts[-2..-1].join('.')
-        else
-          domain
-        end
+        return domain if parts.length <= 2
+
+        second_level = parts[-1].length == 2 && SECOND_LEVEL_LABELS.include?(parts[-2])
+        parts.last(second_level ? 3 : 2).join('.')
+      end
+
+      # Instance wrapper for Base.root_domain
+      def extract_root_domain(domain)
+        self.class.root_domain(domain)
       end
 
       private

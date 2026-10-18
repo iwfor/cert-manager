@@ -12,208 +12,21 @@ require 'logger'
 require 'time'
 require 'openssl'
 require 'digest'
+require 'tmpdir'
 
 require_relative 'lib/dns_providers'
 require_relative 'lib/file_permissions'
+require_relative 'lib/config'
+require_relative 'lib/cli/prompt'
 
 module CertManager
-  VERSION = '1.0.0'
+  VERSION = '2.0.0'
 
   # ACME server URLs
   ACME_SERVERS = {
     production: 'https://acme-v02.api.letsencrypt.org/directory',
     staging: 'https://acme-staging-v02.api.letsencrypt.org/directory'
   }.freeze
-
-  # Configuration loader and validator
-  class Config
-    DEFAULT_CONFIG_PATH = File.expand_path('~/.config/cert_manager/config.yml')
-
-    attr_reader :dns_providers, :certificates, :certbot_path,
-                :config_dir, :work_dir, :logs_dir,
-                :log_level, :propagation_wait, :email, :default_environment
-
-    # Certificates are stored in config_dir/live
-    def cert_dir
-      File.join(@config_dir, 'live')
-    end
-
-    # @param path [String, nil] Path to config file, defaults to DEFAULT_CONFIG_PATH
-    def initialize(path = nil)
-      @path = path || DEFAULT_CONFIG_PATH
-      load_config
-    end
-
-    private
-
-    # Load and parse the YAML configuration file
-    # @raise [ConfigError] If the file is missing or invalid
-    def load_config
-      unless File.exist?(@path)
-        raise ConfigError, "Configuration file not found: #{@path}\n" \
-                           "Run with --init to create a sample configuration."
-      end
-
-      FilePermissions.check(@path)
-
-      config = YAML.safe_load(File.read(@path), permitted_classes: [Symbol])
-
-      unless config.is_a?(Hash)
-        raise ConfigError, "Configuration file is empty or invalid: #{@path}"
-      end
-
-      @dns_providers = config['dns_providers'] || {}
-      @certificates = config['certificates'] || []
-      @certbot_path = config['certbot_path'] || 'certbot'
-
-      # Certbot directory configuration (defaults to ~/.local/share/certbot)
-      default_base = File.expand_path('~/.local/share/certbot')
-      @config_dir = File.expand_path(config['config_dir'] || default_base)
-      @work_dir = File.expand_path(config['work_dir'] || File.join(default_base, 'work'))
-      @logs_dir = File.expand_path(config['logs_dir'] || File.join(default_base, 'logs'))
-
-      @log_level = config['log_level'] || 'INFO'
-      @propagation_wait = config['propagation_wait'] || 60
-      @email = config['email']
-      @default_environment = (config['environment'] || 'production').to_sym
-
-      validate_config
-    end
-
-    # Validate that configured certificates reference valid providers and domains
-    # @raise [ConfigError] If validation fails
-    def validate_config
-      if @certificates.any? && @dns_providers.empty?
-        raise ConfigError, "No DNS providers configured"
-      end
-
-      @dns_providers.each do |name, provider_config|
-        unless provider_config.is_a?(Hash)
-          raise ConfigError, "DNS provider '#{name}' has no configuration (expected a mapping with 'type' and credentials)"
-        end
-        unless provider_config['type']
-          raise ConfigError, "DNS provider '#{name}' is missing required 'type' field"
-        end
-      end
-
-      @certificates.each_with_index do |cert, i|
-        unless cert.is_a?(Hash)
-          raise ConfigError, "Certificate ##{i + 1} is not a valid mapping (got #{cert.inspect})"
-        end
-
-        cert_label = "Certificate ##{i + 1}#{" ('#{cert['name']}')" if cert['name']}"
-
-        unless cert['domains'].is_a?(Array) && cert['domains'].any?
-          raise ConfigError, "#{cert_label} is missing a 'domains' list"
-        end
-
-        cert['domains'].each_with_index do |domain, j|
-          unless domain.is_a?(String) && !domain.strip.empty?
-            raise ConfigError, "#{cert_label}: domain ##{j + 1} is not a valid string (got #{domain.inspect})"
-          end
-        end
-
-        provider = cert['dns_provider']
-        unless provider.is_a?(String) && !provider.strip.empty?
-          raise ConfigError, "#{cert_label} is missing required 'dns_provider' field"
-        end
-        unless @dns_providers.key?(provider)
-          raise ConfigError, "#{cert_label} references unknown dns_provider: '#{provider}' (configured: #{@dns_providers.keys.join(', ')})"
-        end
-
-        if cert['environment'] && !%w[staging production].include?(cert['environment'].to_s)
-          raise ConfigError, "#{cert_label}: invalid environment '#{cert['environment']}' (must be 'staging' or 'production')"
-        end
-
-        if cert['dns_alias'] && !(cert['dns_alias'].is_a?(String) && !cert['dns_alias'].strip.empty?)
-          raise ConfigError, "#{cert_label}: 'dns_alias' must be a non-empty string"
-        end
-
-        validate_deploy_config(cert['name'] || cert['domains'].first, cert['deploy']) if cert['deploy']
-      end
-    end
-
-    SUPPORTED_DEPLOY_SERVICES = %w[nginx apache copy].freeze
-    SUPPORTED_DEPLOY_ACTIONS = %w[reload restart].freeze
-
-    DEFAULT_SERVICE_NAMES = {
-      'nginx' => 'nginx',
-      'apache' => 'apache2'
-    }.freeze
-
-    # Validate deploy target configuration for a certificate
-    # @param cert_name [String] Certificate name for error messages
-    # @param deploy_targets [Array<Hash>] List of deploy target configurations
-    # @raise [ConfigError] If any target is misconfigured
-    def validate_deploy_config(cert_name, deploy_targets)
-      unless deploy_targets.is_a?(Array)
-        raise ConfigError, "Certificate '#{cert_name}': deploy must be a list of targets"
-      end
-
-      deploy_targets.each_with_index do |target, i|
-        unless target.is_a?(Hash)
-          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} is not a valid mapping (got #{target.inspect})"
-        end
-
-        tgt = "Certificate '#{cert_name}': deploy target ##{i + 1}"
-
-        if target['local']
-          %w[user host port].each do |field|
-            if target.key?(field)
-              raise ConfigError, "#{tgt}: '#{field}' is not valid for local deploy targets"
-            end
-          end
-
-          %w[service path].each do |field|
-            unless target[field].is_a?(String) && !target[field].strip.empty?
-              raise ConfigError, "#{tgt} missing required field '#{field}'"
-            end
-          end
-        else
-          %w[user host service path].each do |field|
-            unless target[field].is_a?(String) && !target[field].strip.empty?
-              raise ConfigError, "#{tgt} missing required field '#{field}'"
-            end
-          end
-
-          if target['port'] && !target['port'].is_a?(Integer)
-            raise ConfigError, "#{tgt} 'port' must be an integer (got #{target['port'].inspect})"
-          end
-        end
-
-        unless SUPPORTED_DEPLOY_SERVICES.include?(target['service'])
-          raise ConfigError, "#{tgt} unsupported service '#{target['service']}' (supported: #{SUPPORTED_DEPLOY_SERVICES.join(', ')})"
-        end
-
-        unless target['path'].to_s.start_with?('/')
-          raise ConfigError, "#{tgt} 'path' must be an absolute path (got '#{target['path']}')"
-        end
-
-        if target['key_path'] && !(target['key_path'].is_a?(String) && target['key_path'].start_with?('/'))
-          raise ConfigError, "#{tgt} 'key_path' must be an absolute path (got '#{target['key_path']}')"
-        end
-
-        if target['action'] && !SUPPORTED_DEPLOY_ACTIONS.include?(target['action'])
-          raise ConfigError, "#{tgt} unsupported action '#{target['action']}' (supported: #{SUPPORTED_DEPLOY_ACTIONS.join(', ')})"
-        end
-
-        if target.key?('sudo') && ![true, false].include?(target['sudo'])
-          raise ConfigError, "#{tgt} 'sudo' must be true or false (got #{target['sudo'].inspect})"
-        end
-
-        if target.key?('append_key') && ![true, false].include?(target['append_key'])
-          raise ConfigError, "#{tgt} 'append_key' must be true or false (got #{target['append_key'].inspect})"
-        end
-
-        if target['custom_command'] && target['service'] != 'copy'
-          raise ConfigError, "#{tgt} custom_command is only supported with service 'copy'"
-        end
-      end
-    end
-
-  end
-
-  class ConfigError < StandardError; end
 
   # Main certificate manager
   class Manager
@@ -382,24 +195,18 @@ module CertManager
 
     # Verify DNS provider credentials
     def verify_providers
-      @config.dns_providers.each do |name, _|
+      failures = 0
+      @config.dns_providers.each_key do |name|
         provider = @providers[name]
         print "Verifying #{name} (#{provider.class.provider_type})... "
-
         begin
-          # Try a simple operation to verify credentials
-          case provider
-          when DNSProviders::Cloudflare
-            # List zones to verify token
-            provider.send(:get_zone_id, 'example.com')
-          when DNSProviders::Dreamhost
-            provider.list_records
-          end
-          puts "OK"
+          puts(provider.verify_credentials(@config.zones(name)) ? 'OK' : 'UNVERIFIED (add a zone to test this provider)')
         rescue StandardError => e
+          failures += 1
           puts "FAILED: #{e.message}"
         end
       end
+      raise "#{failures} provider(s) failed verification" if failures.positive?
     end
 
     # Clean up leftover ACME challenge records for a certificate
@@ -408,16 +215,15 @@ module CertManager
       raise "Certificate '#{cert_name}' not found in configuration" unless cert_config
 
       domains = cert_config['domains']
-      provider_name = cert_config['dns_provider']
+      provider_name = @config.provider_name_for(cert_config)
       provider = @providers[provider_name]
 
       raise "Unknown DNS provider: #{provider_name}" unless provider
 
       @logger.info("Cleaning up ACME challenge records for: #{domains.join(', ')}")
 
-      domains.each do |domain|
-        record_name = cert_config['dns_alias'] || "_acme-challenge.#{domain}"
-        @logger.info("Looking for TXT records: #{record_name}")
+      Config.routing_hosts(cert_config).uniq.each do |domain|
+        @logger.info("Looking for TXT records: _acme-challenge.#{domain}")
 
         begin
           count = provider.cleanup_challenge_records(domain)
@@ -452,9 +258,7 @@ module CertManager
         puts "This action cannot be undone. The certificate will be"
         puts "invalidated immediately and must be re-issued."
         puts ""
-        print "Are you sure you want to revoke? [y/N] "
-
-        unless $stdin.gets&.strip&.downcase == 'y'
+        unless CLI::Prompt.confirm('Are you sure you want to revoke?')
           puts "Aborted."
           return
         end
@@ -589,8 +393,8 @@ module CertManager
     # @return [String] Ruby source code fragment
     def hook_script_preamble
       <<~'RUBY'
-        config = YAML.safe_load(File.read(ENV["CERT_MANAGER_CONFIG"]))
-        provider_config = config["dns_providers"][ENV["CERT_MANAGER_PROVIDER"]]
+        config = CertManager::Config.new(ENV["CERT_MANAGER_CONFIG"], warnings: false)
+        provider_config = config.dns_providers[ENV["CERT_MANAGER_PROVIDER"]]
         provider = CertManager::DNSProviders.create(
           provider_config["type"],
           ENV["CERT_MANAGER_PROVIDER"],
@@ -613,7 +417,7 @@ module CertManager
     # @param force [Boolean] If true, pass --force-renewal to certbot
     def request_certificate(cert_config, force: false)
       domains = cert_config['domains']
-      provider_name = cert_config['dns_provider']
+      provider_name = @config.provider_name_for(cert_config)
       dns_alias = cert_config['dns_alias']
       env = effective_environment(cert_config)
       cert_name = cert_name_for(cert_config)
@@ -635,9 +439,7 @@ module CertManager
           puts "that your DNS configuration is correct without using up your"
           puts "Let's Encrypt rate limits (5 failures per hour for production)."
           puts ""
-          print "Continue with production certificate? [y/N] "
-
-          unless $stdin.gets&.strip&.downcase == 'y'
+          unless CLI::Prompt.confirm('Continue with production certificate?')
             puts "Aborted. Use --staging to request a test certificate first."
             return
           end
@@ -742,10 +544,11 @@ module CertManager
       # Set environment for hooks
       env = {
         'CERT_MANAGER_PROVIDER' => provider.name,
-        'CERT_MANAGER_CONFIG' => @config.instance_variable_get(:@path),
+        'CERT_MANAGER_CONFIG' => @config.path,
         'CERT_MANAGER_PROPAGATION_WAIT' => @config.propagation_wait.to_s
       }
       env['CERT_MANAGER_DNS_ALIAS'] = dns_alias if dns_alias
+      env['CERT_MANAGER_STATE_DIR'] = hook_dir
 
       # Record the cert serial before certbot runs so we can detect if it changed
       cert_name = cert_name_for(cert_config)
@@ -791,6 +594,8 @@ module CertManager
       deploy_certificate(cert_config) if cert_config['deploy']&.any?
 
       @logger.info("Certificate obtained successfully!")
+    ensure
+      remove_hook_dir
     end
 
     # Generate the certbot manual auth hook script that adds DNS TXT records
@@ -798,12 +603,13 @@ module CertManager
     # @param dns_alias [String, nil] Optional DNS alias for challenge records
     # @return [String] Path to the generated temporary script
     def auth_hook_script(provider, dns_alias)
-      lib_path = File.expand_path('lib/dns_providers', __dir__)
+      lib_path = File.expand_path('lib/config', __dir__)
       preamble = hook_script_preamble
 
       script = <<~RUBY
         #!/usr/bin/env ruby
         require 'yaml'
+        require 'digest'
         require '#{lib_path}'
 
         begin
@@ -811,12 +617,14 @@ module CertManager
           domain = ENV["CERTBOT_DOMAIN"]
           validation = ENV["CERTBOT_VALIDATION"]
           record_name = ENV["CERT_MANAGER_DNS_ALIAS"] || "_acme-challenge.\#{domain}"
+          # Zone lookups use the name the challenge is created under (the alias when set)
+          zone_domain = ENV["CERT_MANAGER_DNS_ALIAS"] ? ENV["CERT_MANAGER_DNS_ALIAS"].delete_prefix("_acme-challenge.") : domain
 
           puts "Adding TXT record: \#{record_name} = \#{validation}"
-          record_id = provider.add_txt_record(domain, record_name, validation)
+          record_id = provider.add_txt_record(zone_domain, record_name, validation)
 
           # Store record ID for cleanup
-          File.write("/tmp/certbot_record_\#{domain}", record_id.to_s)
+          File.write(File.join(ENV.fetch("CERT_MANAGER_STATE_DIR"), "record_\#{domain}_\#{Digest::SHA256.hexdigest(validation)[0, 12]}"), record_id.to_s)
           puts "Record ID saved: \#{record_id}"
 
           # Wait for propagation
@@ -837,12 +645,13 @@ module CertManager
     # @param dns_alias [String, nil] Optional DNS alias for challenge records
     # @return [String] Path to the generated temporary script
     def cleanup_hook_script(provider, dns_alias)
-      lib_path = File.expand_path('lib/dns_providers', __dir__)
+      lib_path = File.expand_path('lib/config', __dir__)
       preamble = hook_script_preamble
 
       script = <<~RUBY
         #!/usr/bin/env ruby
         require 'yaml'
+        require 'digest'
         require '#{lib_path}'
 
         begin
@@ -850,11 +659,12 @@ module CertManager
           domain = ENV["CERTBOT_DOMAIN"]
           validation = ENV["CERTBOT_VALIDATION"]
 
-          record_id_file = "/tmp/certbot_record_\#{domain}"
+          zone_domain = ENV["CERT_MANAGER_DNS_ALIAS"] ? ENV["CERT_MANAGER_DNS_ALIAS"].delete_prefix("_acme-challenge.") : domain
+          record_id_file = File.join(ENV.fetch("CERT_MANAGER_STATE_DIR"), "record_\#{domain}_\#{Digest::SHA256.hexdigest(validation)[0, 12]}")
           if File.exist?(record_id_file)
             record_id = File.read(record_id_file).strip
             puts "Removing TXT record: \#{record_id} for \#{domain}"
-            provider.remove_txt_record(domain, record_id, validation)
+            provider.remove_txt_record(zone_domain, record_id, validation)
             File.delete(record_id_file)
             puts "TXT record removed successfully"
           else
@@ -875,10 +685,20 @@ module CertManager
     # @param content [String] Script content
     # @return [String] Path to the created script
     def write_temp_script(name, content)
-      path = "/tmp/cert_manager_#{name}_#{$$}"
-      File.write(path, content)
-      File.chmod(0o755, path)
+      path = File.join(hook_dir, name)
+      File.open(path, File::CREAT | File::EXCL | File::WRONLY, 0o700) { |f| f.write(content) }
       path
+    end
+
+    # Private (0700) directory holding hook scripts and per-challenge record ids
+    # @return [String]
+    def hook_dir
+      @hook_dir ||= Dir.mktmpdir('cert_manager_hooks')
+    end
+
+    def remove_hook_dir
+      FileUtils.remove_entry(@hook_dir) if @hook_dir && File.directory?(@hook_dir)
+      @hook_dir = nil
     end
 
     # Create certbot config, work, and log directories if they don't exist
@@ -1321,7 +1141,7 @@ module CertManager
 
       puts "\n#{cert_name}:"
       puts "  Domains: #{cert_config['domains'].join(', ')}"
-      puts "  DNS Provider: #{cert_config['dns_provider']}"
+      puts "  DNS Provider: #{@config.provider_name_for(cert_config)}"
       puts "  DNS Alias: #{cert_config['dns_alias'] || 'none'}"
       puts "  Environment: #{env.to_s.upcase}"
 
@@ -1371,335 +1191,8 @@ module CertManager
     end
 
   end
-
-  # Generate sample configuration
-  def self.generate_sample_config(path)
-    config = <<~YAML
-      # CertManager Configuration
-      # See documentation for full options
-
-      # Email for Let's Encrypt notifications
-      email: admin@example.com
-
-      # Path to certbot binary (optional, defaults to 'certbot')
-      certbot_path: certbot
-
-      # Certbot directory configuration (all default to ~/.local/share/certbot)
-      # config_dir: ~/.local/share/certbot
-      # work_dir: ~/.local/share/certbot/work
-      # logs_dir: ~/.local/share/certbot/logs
-
-      # Log level: DEBUG, INFO, WARN, ERROR (optional, defaults to INFO)
-      log_level: INFO
-
-      # Seconds to wait for DNS propagation (optional, defaults to 60)
-      propagation_wait: 60
-
-      # Default environment: 'production' or 'staging' (optional, defaults to 'production')
-      # Can be overridden per-certificate or via CLI flags (--staging / --production)
-      environment: production
-
-      # DNS Providers
-      # Configure one or more DNS providers with their credentials
-      dns_providers:
-        # Cloudflare example
-        cloudflare_main:
-          type: cloudflare
-          api_token: your-cloudflare-api-token
-          # Optional: specify zone_id to skip zone lookup
-          # zone_id: abc123
-
-        # Dreamhost example
-        dreamhost_backup:
-          type: dreamhost
-          api_key: your-dreamhost-api-key
-
-        # AWS Route 53 example (requires: gem install aws-sdk-route53)
-        # route53_main:
-        #   type: route53
-        #   hosted_zone_id: Z1234567890ABC
-        #   access_key_id: AKIAIOSFODNN7EXAMPLE      # optional, uses AWS credential chain
-        #   secret_access_key: your-secret-key       # optional
-
-        # GCP Cloud DNS example (requires: gem install google-apis-dns_v1 googleauth)
-        # gcp_dns:
-        #   type: cloud_dns
-        #   project_id: my-project-123
-        #   managed_zone: my-zone-name
-        #   credentials_file: /path/to/service-account.json  # optional, uses ADC
-
-        # DNS Made Easy example
-        # dnsmadeeasy_dns:
-        #   type: dnsmadeeasy
-        #   api_key: your-api-key
-        #   secret_key: your-secret-key
-
-      # Certificates to manage
-      certificates:
-        # Production certificate with deployment to target hosts
-        - name: internal-server
-          domains:
-            - internal.example.com
-          dns_provider: cloudflare_main
-          # Deploy cert files to remote hosts via SSH after obtaining/renewing
-          # deploy:
-          #   - user: deploy
-          #     host: web1.example.com
-          #     path: /etc/ssl/certs/example.com
-          #     service: nginx
-          #     action: reload    # reload (default) or restart
-
-        # Wildcard certificate
-        - name: wildcard-internal
-          domains:
-            - "*.internal.example.com"
-            - internal.example.com
-          dns_provider: cloudflare_main
-
-        # Certificate with DNS alias (for internal hosts)
-        # The ACME challenge will be placed at the alias domain instead
-        - name: private-server
-          domains:
-            - private.internal.local
-          dns_provider: cloudflare_main
-          dns_alias: _acme-challenge.acme.example.com
-
-        # Staging certificate for testing
-        - name: test-cert
-          domains:
-            - test.example.com
-          dns_provider: dreamhost_backup
-          environment: staging
-    YAML
-
-    dir = File.dirname(path)
-    FileUtils.mkdir_p(dir) unless File.exist?(dir)
-    File.write(path, config)
-    puts "Sample configuration written to: #{path}"
-  end
 end
 
-# CLI interface
-if __FILE__ == $PROGRAM_NAME
-  options = {
-    config: nil,
-    dry_run: false,
-    force: false,
-    environment: nil,
-    quiet: false,
-    yes: false,
-    verbose: false
-  }
+require_relative 'lib/cli'
 
-  parser = OptionParser.new do |opts|
-    opts.banner = "Usage: #{$PROGRAM_NAME} [options] <command> [args]"
-    opts.separator ""
-    opts.separator "Commands:"
-    opts.separator "  request <name>    Request a new certificate"
-    opts.separator "  deploy <name>     Deploy certificate to configured targets (use -f to clear failure state)"
-    opts.separator "  renew [name]      Renew certificate(s) due for renewal"
-    opts.separator "  revoke <name>     Revoke a certificate"
-    opts.separator "  cleanup <name>    Remove leftover ACME challenge DNS records"
-    opts.separator "  list              List all configured certificates"
-    opts.separator "  verify            Verify DNS provider credentials"
-    opts.separator "  init              Create sample configuration file"
-    opts.separator ""
-    opts.separator "Options:"
-
-    opts.on('-c', '--config PATH', 'Path to configuration file') do |path|
-      options[:config] = path
-    end
-
-    opts.on('-n', '--dry-run', 'Show what would be done without making changes') do
-      options[:dry_run] = true
-    end
-
-    opts.on('-f', '--force', 'With request/renew, pass --force-renewal to certbot (reissue even if not due); with deploy, clears recorded failure state') do
-      options[:force] = true
-    end
-
-    opts.on('-s', '--staging', 'Use Let\'s Encrypt staging environment (test certificates)') do
-      options[:environment] = :staging
-    end
-
-    opts.on('-p', '--production', 'Use Let\'s Encrypt production environment (real certificates)') do
-      options[:environment] = :production
-    end
-
-    opts.on('-q', '--quiet', 'Quiet mode for cron jobs (only output errors)') do
-      options[:quiet] = true
-    end
-
-    opts.on('-y', '--yes', 'Skip confirmation prompts (for automation)') do
-      options[:yes] = true
-    end
-
-    opts.on('-r', '--reason REASON', 'Revocation reason (keycompromise, superseded, etc.)') do |reason|
-      options[:reason] = reason
-    end
-
-    opts.on('-v', '--verbose', 'Enable verbose output') do
-      options[:verbose] = true
-    end
-
-    opts.on('-V', '--version', 'Show version') do
-      puts "CertManager v#{CertManager::VERSION}"
-      exit
-    end
-
-    opts.on('-h', '--help', 'Show this help') do
-      puts opts
-      exit
-    end
-  end
-
-  parser.parse!
-
-  command = ARGV.shift
-
-  case command
-  when 'init'
-    config_path = options[:config] || CertManager::Config::DEFAULT_CONFIG_PATH
-    if File.exist?(config_path)
-      print "Configuration file already exists. Overwrite? [y/N] "
-      exit unless $stdin.gets.strip.downcase == 'y'
-    end
-    CertManager.generate_sample_config(config_path)
-
-  when 'request'
-    cert_name = ARGV.shift
-    unless cert_name
-      puts "Error: Certificate name required"
-      puts "Usage: #{$PROGRAM_NAME} request <cert_name>"
-      exit 1
-    end
-
-    begin
-      manager = CertManager::Manager.new(
-        config_path: options[:config],
-        dry_run: options[:dry_run],
-        environment: options[:environment],
-        quiet: options[:quiet],
-        skip_prompts: options[:yes],
-        verbose: options[:verbose]
-      )
-      manager.request(cert_name, force: options[:force])
-    rescue StandardError => e
-      puts "Error: #{e.message}"
-      exit 1
-    end
-
-  when 'deploy'
-    cert_name = ARGV.shift
-    unless cert_name
-      puts "Error: Certificate name required"
-      puts "Usage: #{$PROGRAM_NAME} deploy <cert_name>"
-      exit 1
-    end
-
-    begin
-      manager = CertManager::Manager.new(
-        config_path: options[:config],
-        dry_run: options[:dry_run],
-        quiet: options[:quiet],
-        skip_prompts: options[:yes],
-        verbose: options[:verbose]
-      )
-      manager.deploy(cert_name, force: options[:force])
-    rescue StandardError => e
-      puts "Error: #{e.message}"
-      exit 1
-    end
-
-  when 'renew'
-    cert_name = ARGV.shift  # Optional certificate name
-
-    begin
-      manager = CertManager::Manager.new(
-        config_path: options[:config],
-        dry_run: options[:dry_run],
-        environment: options[:environment],
-        quiet: options[:quiet],
-        skip_prompts: options[:yes],
-        verbose: options[:verbose]
-      )
-      manager.renew(cert_name: cert_name, force: options[:force])
-    rescue StandardError => e
-      puts "Error: #{e.message}"
-      exit 1
-    end
-
-  when 'revoke'
-    cert_name = ARGV.shift
-    unless cert_name
-      puts "Error: Certificate name required"
-      puts "Usage: #{$PROGRAM_NAME} revoke <cert_name>"
-      exit 1
-    end
-
-    begin
-      manager = CertManager::Manager.new(
-        config_path: options[:config],
-        dry_run: options[:dry_run],
-        environment: options[:environment],
-        quiet: options[:quiet],
-        skip_prompts: options[:yes],
-        verbose: options[:verbose]
-      )
-      manager.revoke(cert_name, reason: options[:reason])
-    rescue StandardError => e
-      puts "Error: #{e.message}"
-      exit 1
-    end
-
-  when 'cleanup'
-    cert_name = ARGV.shift
-    unless cert_name
-      puts "Error: Certificate name required"
-      puts "Usage: #{$PROGRAM_NAME} cleanup <cert_name>"
-      exit 1
-    end
-
-    begin
-      manager = CertManager::Manager.new(
-        config_path: options[:config],
-        quiet: options[:quiet],
-        verbose: options[:verbose]
-      )
-      manager.cleanup(cert_name)
-    rescue StandardError => e
-      puts "Error: #{e.message}"
-      exit 1
-    end
-
-  when 'list'
-    begin
-      manager = CertManager::Manager.new(
-        config_path: options[:config],
-        environment: options[:environment],
-        verbose: options[:verbose]
-      )
-      manager.print_environment_info
-      manager.list
-    rescue StandardError => e
-      puts "Error: #{e.message}"
-      exit 1
-    end
-
-  when 'verify'
-    begin
-      manager = CertManager::Manager.new(
-        config_path: options[:config],
-        verbose: options[:verbose]
-      )
-      manager.verify_providers
-    rescue StandardError => e
-      puts "Error: #{e.message}"
-      exit 1
-    end
-
-  else
-    puts parser
-    exit 1
-  end
-end
+exit CertManager::CLI.run(ARGV) if __FILE__ == $PROGRAM_NAME
