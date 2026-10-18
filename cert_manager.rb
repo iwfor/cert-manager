@@ -18,7 +18,7 @@ require_relative 'lib/file_permissions'
 require_relative 'lib/config'
 
 module CertManager
-  VERSION = '1.0.0'
+  VERSION = '2.0.0'
 
   # ACME server URLs
   ACME_SERVERS = {
