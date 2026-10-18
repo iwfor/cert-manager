@@ -45,6 +45,10 @@ module CertManager
         ['hosted_zone_id']
       end
 
+      def self.secret_credentials
+        %w[secret_access_key session_token]
+      end
+
       def initialize(name, credentials)
         super
         @hosted_zone_id = credentials['hosted_zone_id']

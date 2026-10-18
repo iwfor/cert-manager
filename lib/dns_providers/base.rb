@@ -84,6 +84,12 @@ module CertManager
         raise NotImplementedError, "#{name} must implement .required_credentials"
       end
 
+      # Credential keys that are secrets (encrypted at rest, masked in output)
+      # @return [Array<String>] List of secret credential keys
+      def self.secret_credentials
+        []
+      end
+
       # Remove all ACME challenge records for a domain
       # Default implementation works for providers whose find_txt_records returns
       # records with :id or :value keys. Override for providers with custom logic.

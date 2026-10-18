@@ -38,6 +38,10 @@ module CertManager
         %w[api_key api_user client_ip]
       end
 
+      def self.secret_credentials
+        ['api_key']
+      end
+
       def initialize(name, credentials)
         super
         @api_key = credentials['api_key']
