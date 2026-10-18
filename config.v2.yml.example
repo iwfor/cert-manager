@@ -1,0 +1,127 @@
+# CertManager configuration (format version 2)
+#
+# Don't copy this file by hand. Create the real one with:
+#   cert_manager.rb init --email you@example.com          -> config.v2.yml + cert-manager.key
+#   cert_manager.rb add-provider NAME --type TYPE --zone example.com
+# Upgrading from config.yml:  cert_manager.rb convert-config
+#
+# Location: ~/.config/cert_manager/config.v2.yml (override with -c or $CERT_MANAGER_CONFIG)
+# Secrets are stored as ENC[v1:...] values, encrypted with cert-manager.key in the same
+# directory (mode 0600). Manage providers and zones with commands, not by editing them.
+#
+# Cron job example (runs daily at 2am, quiet mode):
+#   0 2 * * * /path/to/cert_manager.rb --quiet --yes renew
+
+version: 2
+
+# Email for Let's Encrypt notifications (required)
+email: admin@example.com
+
+# Path to certbot binary (optional, defaults to 'certbot')
+certbot_path: certbot
+
+# Certbot directory configuration (all default to ~/.local/share/certbot)
+# config_dir: ~/.local/share/certbot        # certificates stored in config_dir/live
+# work_dir: ~/.local/share/certbot/work
+# logs_dir: ~/.local/share/certbot/logs
+
+# Log level: DEBUG, INFO, WARN, ERROR (optional, defaults to INFO)
+log_level: INFO
+
+# Seconds to wait for DNS propagation (optional, defaults to 60)
+propagation_wait: 60
+
+# Default environment: 'production' or 'staging' (optional, defaults to 'production')
+# Can be overridden per certificate or with --staging / --production
+environment: production
+
+# DNS providers. Each lists the zones it serves; a certificate is routed to the
+# provider with the longest zone matching its domains (or its dns_alias).
+providers:
+  cloudflare_dns:                 # add-provider cloudflare_dns --type cloudflare --zone example.com
+    type: cloudflare
+    credentials:
+      api_token: ENC[v1:...]
+      # zone_id: abc123def456     # optional; pins this provider to a single zone
+    zones:
+      - example.com
+      - example.net
+
+  dreamhost_dns:                  # add-provider dreamhost_dns --type dreamhost --zone example.org
+    type: dreamhost
+    credentials:
+      api_key: ENC[v1:...]
+    zones:
+      - example.org
+
+  route53_dns:                    # add-provider route53_dns --type route53 --set hosted_zone_id=Z1234567890ABC --zone example.io
+    type: route53                 # serves exactly one zone (hosted_zone_id)
+    credentials:
+      hosted_zone_id: Z1234567890ABC
+      # access_key_id: AKIAIOSFODNN7EXAMPLE      # optional; otherwise the AWS credential chain is used
+      # secret_access_key: ENC[v1:...]           # update-provider-key route53_dns --credential secret_access_key
+      # region: us-east-1
+    zones:
+      - example.io
+
+  # Other types: cloud_dns (project_id, managed_zone, credentials_file), dnsmadeeasy (api_key,
+  # secret_key, sandbox), digitalocean (api_token), linode (api_token), namecheap (api_key,
+  # api_user, client_ip). See: cert_manager.rb help add-provider
+
+# Certificates to manage
+certificates:
+  # Zone routing picks the provider: www.example.com -> cloudflare_dns
+  - name: webserver
+    domains:
+      - www.example.com
+    # Deploy after obtaining/renewing: nginx | apache | copy, remote (SSH) or local
+    deploy:
+      - user: deploy
+        host: web1.example.com
+        path: /etc/ssl/certs/example.com.crt
+        key_path: /etc/ssl/private/example.com.key   # optional
+        service: nginx
+        action: reload              # reload (default) or restart
+        # sudo: false               # default true
+      - local: true                 # same machine, no SSH
+        path: /etc/ssl/certs/local.example.com.crt
+        service: nginx
+        sudo: false
+      - user: deploy                # combined PEM + custom command (e.g. HAProxy)
+        host: lb1.example.com
+        path: /etc/haproxy/certs/ha.example.com.pem
+        append_key: true
+        service: copy
+        custom_command: sudo systemctl reload haproxy
+
+  # Multiple domains (SAN) and wildcard
+  - name: wildcard
+    domains:
+      - "*.example.com"
+      - example.com
+
+  # DNS alias: the challenge record is created at the alias, so the alias zone
+  # (acme.example.org -> dreamhost_dns) decides the provider.
+  # Needs: _acme-challenge.server.internal.local CNAME _acme-challenge.acme.example.org
+  - name: internal-server
+    domains:
+      - server.internal.local
+    dns_alias: _acme-challenge.acme.example.org
+
+  # Force a provider regardless of zones
+  - name: forced
+    domains:
+      - forced.example.net
+    dns_provider: dreamhost_dns
+
+  # Staging certificate
+  - name: test-cert
+    domains:
+      - test.example.com
+    environment: staging
+
+  # Reuse the private key on renewal (default true; set false to opt out)
+  - name: pinned-cert
+    domains:
+      - pinned.example.com
+    reuse_key: true

@@ -44,6 +44,17 @@ class ConfigV2Test < Test::Unit::TestCase
     CertManager::Config.new(@path)
   end
 
+  def test_example_config_is_valid
+    FileUtils.cp(File.expand_path('../config.v2.yml.example', __dir__), @path)
+    File.chmod(0o600, @path)
+    config = nil
+    capture_stdout_and_stderr { config = load_config }
+    names = config.certificates.to_h { |c| [c['name'], config.provider_name_for(c)] }
+    assert_equal 'cloudflare_dns', names['webserver']
+    assert_equal 'dreamhost_dns', names['internal-server']
+    assert_equal 'dreamhost_dns', names['forced']
+  end
+
   def test_loads_and_decrypts_credentials
     config = load_config
     assert_equal 2, config.version

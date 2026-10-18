@@ -6,11 +6,10 @@
 
 require 'yaml'
 require 'optparse'
-require_relative 'lib/dns_providers'
-require_relative 'lib/file_permissions'
+require_relative 'lib/config'
 
 options = {
-  config: File.expand_path('~/.config/cert_manager/config.yml'),
+  config: nil,
   provider: nil,
   domain: nil,
   keep: false,
@@ -75,27 +74,28 @@ unless options[:domain] || options[:list_only] == false
   exit 1
 end
 
-# Load configuration
-unless File.exist?(options[:config])
-  puts "Error: Configuration file not found: #{options[:config]}"
+# Load configuration (v2 or legacy; secrets are decrypted by Config)
+begin
+  config = CertManager::Config.new(options[:config], warn_legacy: false)
+rescue CertManager::ConfigError => e
+  puts "Error: #{e.message}"
   exit 1
 end
 
-CertManager::FilePermissions.check(options[:config])
-config = YAML.safe_load(File.read(options[:config]))
-
-unless config['dns_providers']&.key?(options[:provider])
+unless config.dns_providers.key?(options[:provider])
   puts "Error: Provider '#{options[:provider]}' not found in configuration"
-  puts "Available providers: #{config['dns_providers']&.keys&.join(', ') || 'none'}"
+  puts "Available providers: #{config.dns_providers.keys.join(', ').then { |names| names.empty? ? 'none' : names }}"
   exit 1
 end
 
 # Create provider instance
-provider_config = config['dns_providers'][options[:provider]]
+provider_config = config.dns_providers[options[:provider]]
 puts "Provider: #{options[:provider]} (#{provider_config['type']})"
 puts "Domain: #{options[:domain]}" if options[:domain]
 if options[:verbose]
-  puts "Config: #{provider_config.reject { |k, _| k == 'api_key' && k == 'api_token' }.inspect}"
+  secrets = CertManager::DNSProviders[provider_config['type']].secret_credentials
+  shown = provider_config.to_h { |k, v| [k, secrets.include?(k) ? CertManager::SecretStore.mask(v) : v] }
+  puts "Config: #{shown.inspect}"
 end
 puts ""
 
