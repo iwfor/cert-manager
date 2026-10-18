@@ -204,6 +204,8 @@ module CertManager
         Option.new(key: :help, short: '-h', long: '--help', desc: 'Show help')
       end
 
+      public :version_option, :help_option
+
       def signature(cmd)
         parts = cmd.args.map { |a| a.required ? "<#{a.name}>" : "[#{a.name}]" }
         [cmd.name, *parts].join(' ')
@@ -274,3 +276,4 @@ end
 require_relative 'cli/convert_config'
 require_relative 'cli/commands'
 require_relative 'cli/provider_commands'
+require_relative 'cli/completion_commands'

@@ -22,7 +22,7 @@ class CLITest < Test::Unit::TestCase
 
   def test_help_lists_every_registered_command
     _, out, = run_cli('help')
-    CertManager::CLI.commands.each_key { |name| assert_match(/^\s+#{Regexp.escape(name)}\b/, out) }
+    CertManager::CLI.commands.reject { |_, c| c.group == :hidden }.each_key { |name| assert_match(/^\s+#{Regexp.escape(name)}\b/, out) }
   end
 
   def test_command_help_has_usage_and_options
