@@ -53,6 +53,31 @@ module CertManager
       DEFAULT_CONFIG_PATH
     end
 
+    # Hostnames whose zones decide which provider serves a certificate: the
+    # dns_alias target when set (that is where challenges are placed), else the
+    # certificate's domains without any wildcard prefix.
+    # @param cert [Hash] Certificate configuration
+    # @return [Array<String>]
+    def self.routing_hosts(cert)
+      if cert['dns_alias']
+        [cert['dns_alias'].strip.downcase.chomp('.').delete_prefix(CHALLENGE_PREFIX)]
+      else
+        cert['domains'].map { |d| d.sub(/\A\*\./, '') }
+      end
+    end
+
+    # Provider owning the longest zone that contains host
+    # @param host [String]
+    # @param zones_by_provider [Hash{String=>Array<String>}] normalized zones per provider
+    # @return [String, nil] provider name, or nil when no zone matches
+    def self.provider_for_host(host, zones_by_provider)
+      host = host.downcase.chomp('.')
+      best = zones_by_provider.flat_map { |name, zones| zones.map { |z| [z, name] } }
+                              .select { |zone, _| host == zone || host.end_with?(".#{zone}") }
+                              .max_by { |zone, _| zone.length }
+      best&.last
+    end
+
     # Normalize a zone name (case, trailing dot) and validate its shape
     # @return [String] normalized zone
     # @raise [ConfigError] if it is not a plausible DNS zone
@@ -96,7 +121,7 @@ module CertManager
     def provider_name_for(cert)
       return cert['dns_provider'] if cert['dns_provider']
 
-      hosts = cert['dns_alias'] ? [alias_host(cert['dns_alias'])] : cert['domains'].map { |d| d.sub(/\A\*\./, '') }
+      hosts = Config.routing_hosts(cert)
       matches = hosts.to_h { |host| [host, provider_for_host(host)] }
       unresolved = matches.select { |_, name| name.nil? }.keys
       unless unresolved.empty?
@@ -116,10 +141,6 @@ module CertManager
 
     private
 
-    def alias_host(dns_alias)
-      dns_alias.strip.downcase.chomp('.').delete_prefix(CHALLENGE_PREFIX)
-    end
-
     def zones_by_provider
       @zones_by_provider ||= {}
     end
@@ -128,13 +149,8 @@ module CertManager
       zones_by_provider.values.flatten.sort
     end
 
-    # Provider owning the longest zone that contains host
     def provider_for_host(host)
-      host = host.downcase.chomp('.')
-      best = zones_by_provider.flat_map { |name, zones| zones.map { |z| [z, name] } }
-                              .select { |zone, _| host == zone || host.end_with?(".#{zone}") }
-                              .max_by { |zone, _| zone.length }
-      best&.last
+      Config.provider_for_host(host, zones_by_provider)
     end
 
     # Load and parse the YAML configuration file

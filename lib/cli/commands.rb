@@ -2,6 +2,7 @@
 
 require_relative '../config_writer'
 require_relative '../secret_store'
+require_relative '../config_migrator'
 
 module CertManager
   module CLI
@@ -83,6 +84,17 @@ module CertManager
       puts "Email:                    #{email}  (edit the file to change it)" if email == 'admin@example.com'
       puts
       puts "Next: #{CLI.program} add-provider NAME --type cloudflare"
+    end
+
+    command 'convert-config', group: :configuration, summary: 'Convert a v1 config.yml to the v2 format',
+            options: [option(:output, long: '--output', arg: 'PATH',
+                             desc: 'Where to write the v2 file (default: config.v2.yml next to the source)')],
+            globals: %i[config dry_run yes],
+            description: "Reads the old config (-c, $CERT_MANAGER_CONFIG, or ~/.config/cert_manager/config.yml),\n" \
+                         "writes a v2 file with API keys encrypted using cert-manager.key (created if needed),\n" \
+                         "and infers each provider's zones from your certificates. The old file is left untouched.",
+            examples: ['convert-config --dry-run', 'convert-config'] do |ctx|
+      ConvertConfig.new(ctx.options).run
     end
 
     command 'help', group: :tools, summary: 'Show help for a command',

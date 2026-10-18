@@ -268,4 +268,5 @@ module CertManager
   end
 end
 
+require_relative 'cli/convert_config'
 require_relative 'cli/commands'

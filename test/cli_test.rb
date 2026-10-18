@@ -130,3 +130,79 @@ class CLITest < Test::Unit::TestCase
     assert_equal key, File.read(File.join(@dir, 'cert-manager.key'))
   end
 end
+
+class ConvertConfigCLITest < Test::Unit::TestCase
+  include TestFixtures
+
+  def setup
+    @dir = Dir.mktmpdir('cert_manager_convert')
+    @v1 = write_config(@dir, 'dns_providers' => {
+                         'test_cf' => { 'type' => 'cloudflare', 'api_token' => 'very-secret-token-1234' }
+                       })
+    @v2 = File.join(@dir, 'config.v2.yml')
+  end
+
+  def teardown
+    FileUtils.rm_rf(@dir)
+  end
+
+  def run_cli(*argv)
+    out = StringIO.new
+    err = StringIO.new
+    old = [$stdout, $stderr, $stdin]
+    $stdout = out
+    $stderr = err
+    $stdin = StringIO.new('')
+    [CertManager::CLI.run(argv), out.string, err.string]
+  ensure
+    $stdout, $stderr, $stdin = old
+  end
+
+  def test_converts_and_encrypts_secrets
+    status, out, err = run_cli('-c', @v1, 'convert-config')
+    assert_equal 0, status, err
+    assert_no_match(/very-secret-token-1234/, out)
+    assert_no_match(/very-secret-token-1234/, File.read(@v2))
+    assert_match(/ENC\[v1:/, File.read(@v2))
+    assert_equal 0o600, File.stat(@v2).mode & 0o777
+    assert_equal 0o600, File.stat(File.join(@dir, 'cert-manager.key')).mode & 0o777
+    config = CertManager::Config.new(@v2)
+    assert_equal 'very-secret-token-1234', config.dns_providers['test_cf']['api_token']
+  end
+
+  def test_original_file_is_untouched
+    before = File.read(@v1)
+    run_cli('-c', @v1, 'convert-config')
+    assert_equal before, File.read(@v1)
+  end
+
+  def test_dry_run_writes_nothing_and_masks_secrets
+    status, out, = run_cli('-c', @v1, 'convert-config', '--dry-run')
+    assert_equal 0, status
+    assert(!(File.exist?(@v2)))
+    assert(!(File.exist?(File.join(@dir, 'cert-manager.key'))))
+    assert_no_match(/very-secret-token-1234/, out)
+    assert_match(/\*\*\*\*1234/, out)
+  end
+
+  def test_refuses_to_overwrite_without_confirmation
+    File.write(@v2, 'existing')
+    status, _, err = run_cli('-c', @v1, 'convert-config')
+    assert_equal 1, status
+    assert_match(/Aborted/, err)
+    assert_equal 'existing', File.read(@v2)
+  end
+
+  def test_rejects_already_v2_source
+    run_cli('-c', @v1, 'convert-config')
+    status, _, err = run_cli('-c', @v2, 'convert-config', '--output', File.join(@dir, 'again.yml'))
+    assert_equal 1, status
+    assert_match(/already a v2/, err)
+  end
+
+  def test_missing_source
+    status, _, err = run_cli('-c', File.join(@dir, 'nope.yml'), 'convert-config')
+    assert_equal 1, status
+    assert_match(/not found/, err)
+  end
+end
