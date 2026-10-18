@@ -53,11 +53,12 @@ module CertManager
         raise ConfigError, "DNS provider '#{name}' has no configuration" unless settings.is_a?(Hash) && settings['type']
 
         type = settings['type']
-        secrets = DNSProviders.registered?(type) ? DNSProviders[type].secret_credentials : []
-        @warnings << "Provider '#{name}': unknown type '#{type}', credentials copied unencrypted" unless DNSProviders.registered?(type)
+        known = DNSProviders.registered?(type)
+        secrets = known ? DNSProviders[type].secret_credentials : nil # nil: unknown type, treat every value as secret
+        @warnings << "Provider '#{name}': unknown type '#{type}', all of its credentials were encrypted" unless known
 
         credentials = settings.reject { |key, _| key == 'type' }.to_h do |key, value|
-          if secrets.include?(key.to_s) && !value.nil?
+          if (secrets.nil? || secrets.include?(key.to_s)) && !value.nil?
             @encrypted << "#{name}.#{key}"
             [key, @encryptor.call(value.to_s)]
           else
@@ -76,12 +77,31 @@ module CertManager
         Config.routing_hosts(cert).each do |host|
           root = DNSProviders::Base.root_domain(host.downcase)
           next if owners.key?(root)
+          next unless usable_zone?(root)
+          next if single_zone?(providers[provider]) && zones[provider].any?
 
           owners[root] = provider
           zones[provider] << root
         end
       end
       zones.transform_values(&:sort)
+    end
+
+    # Zones that fail validation (e.g. single-label names) stay unrouted; their certificates keep dns_provider
+    def usable_zone?(root)
+      Config.normalize_zone(root)
+      true
+    rescue ConfigError
+      @warnings << "No valid zone can be inferred for '#{root}'; its certificate(s) keep an explicit dns_provider"
+      false
+    end
+
+    # Providers pinned to one zone by an id credential can serve only the first zone found
+    def single_zone?(settings)
+      return false unless DNSProviders.registered?(settings['type'])
+
+      key = DNSProviders[settings['type']].zone_credential
+      !key.nil? && !settings['credentials'][key].to_s.empty?
     end
 
     def convert_certificates(zones)

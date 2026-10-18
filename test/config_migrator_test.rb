@@ -67,10 +67,10 @@ class ConfigMigratorTest < Test::Unit::TestCase
     assert_equal 2, result.warnings.size
   end
 
-  def test_unknown_provider_type_is_copied_unencrypted_with_warning
+  def test_unknown_provider_type_has_every_credential_encrypted
     doc = v1('dns_providers' => { 'x' => { 'type' => 'mystery', 'token' => 't' } }, 'certificates' => [])
     result = migrate(doc)
-    assert_equal 't', result.document['providers']['x']['credentials']['token']
+    assert_equal 'ENC<t>', result.document['providers']['x']['credentials']['token']
     assert(result.warnings.any? { |w| w.include?('unknown type') })
   end
 
@@ -99,5 +99,21 @@ class ConfigMigratorTest < Test::Unit::TestCase
       assert_equal 'cf', config.provider_name_for(config.certificates.first)
       assert_equal 'dh', config.provider_name_for(config.certificates.last)
     end
+  end
+  def test_unusable_zone_keeps_explicit_provider_with_warning
+    doc = v1('certificates' => [{ 'name' => 'intra', 'domains' => ['intranet'], 'dns_provider' => 'cf' }])
+    result = migrate(doc)
+    assert_equal({ 'cf' => [], 'dh' => [] }, result.zones)
+    assert_equal 'cf', result.document['certificates'].first['dns_provider']
+    assert(result.warnings.any? { |w| w.include?("'intranet'") })
+  end
+
+  def test_single_zone_provider_gets_only_one_zone
+    doc = v1('dns_providers' => { 'aws' => { 'type' => 'route53', 'hosted_zone_id' => 'Z1' } },
+             'certificates' => [{ 'name' => 'a', 'domains' => ['a.example.com'], 'dns_provider' => 'aws' },
+                                { 'name' => 'b', 'domains' => ['b.example.org'], 'dns_provider' => 'aws' }])
+    result = migrate(doc)
+    assert_equal({ 'aws' => ['example.com'] }, result.zones)
+    assert_equal ['b'], result.explicit_certs
   end
 end

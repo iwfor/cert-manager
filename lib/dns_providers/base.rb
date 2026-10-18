@@ -206,7 +206,7 @@ module CertManager
       end
 
       # Second-level labels that act like a TLD under a country-code TLD (example.co.uk)
-      SECOND_LEVEL_LABELS = %w[co com org net gov edu ac].freeze
+      SECOND_LEVEL_LABELS = %w[co com org net gov edu ac me ltd plc].freeze
 
       # Extract the root/apex domain from a full domain name.
       # Heuristic (no public suffix list): the last two labels, or the last three

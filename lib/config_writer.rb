@@ -3,6 +3,7 @@
 require 'yaml'
 require 'tempfile'
 require 'fileutils'
+require 'digest'
 require_relative 'config'
 require_relative 'secret_store'
 
@@ -12,12 +13,15 @@ module CertManager
   # secrets are never decrypted just to be written back. Comments in the
   # file are not preserved.
   class ConfigWriter
+    BACKUPS_KEPT = 10
+
     attr_reader :path, :data
 
     # @param path [String] Path to the v2 config file
     # @param create [Boolean] Start from an empty v2 document if the file does not exist
     def initialize(path, create: false)
       @path = File.expand_path(path)
+      @digest = file_digest
       @data = load_document(create)
     end
 
@@ -34,12 +38,13 @@ module CertManager
 
     # Normalized zones of every provider, e.g. { 'cf' => ['example.com'] }
     def zones_by_provider
-      providers.transform_values { |settings| (settings['zones'] || []).map { |z| Config.normalize_zone(z) } }
+      providers.select { |_, settings| settings.is_a?(Hash) }
+               .transform_values { |settings| (settings['zones'] || []).map { |z| Config.normalize_zone(z) } }
     end
 
     # True if any credential in the file is an ENC[...] secret
     def encrypted_values?
-      providers.values.any? { |s| (s['credentials'] || {}).values.any? { |v| SecretStore.encrypted?(v) } }
+      providers.values.grep(Hash).any? { |s| (s['credentials'] || {}).values.any? { |v| SecretStore.encrypted?(v) } }
     end
 
     # Open the file's secret store, creating the key only when nothing is
@@ -57,27 +62,63 @@ module CertManager
     end
 
     # Atomically write the document with owner-only permissions, keeping a
-    # timestamped backup of the previous file.
+    # timestamped backup of the previous file (the newest BACKUPS_KEPT are kept).
+    # A symlinked config is written through to its target. Concurrent edits are
+    # detected: if the file changed since it was read, nothing is written.
     # @return [String, nil] backup path, if one was made
+    # @raise [ConfigError] if the file was modified by someone else meanwhile
     def save
-      FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
-      backup = backup_existing
-      Tempfile.create(['.config', '.tmp'], File.dirname(@path)) do |tmp|
-        tmp.chmod(0o600)
-        tmp.write(YAML.dump(@data))
-        tmp.flush
-        tmp.fsync
-        File.rename(tmp.path, @path)
+      target = real_path
+      FileUtils.mkdir_p(File.dirname(target), mode: 0o700)
+      with_lock(target) do
+        unless file_digest(target) == @digest
+          raise ConfigError, "#{target} was modified by another process while editing; nothing was saved. Re-run the command."
+        end
+
+        backup = backup_existing(target)
+        write_atomically(target)
+        prune_backups(target)
+        @digest = file_digest(target)
+        backup
       end
-      backup
     end
 
     private
 
+    def real_path
+      File.symlink?(@path) ? File.realpath(@path) : @path
+    rescue Errno::ENOENT
+      @path
+    end
+
+    def file_digest(path = real_path)
+      File.exist?(path) ? Digest::SHA256.file(path).hexdigest : nil
+    end
+
+    def with_lock(target)
+      File.open("#{target}.lock", File::CREAT | File::WRONLY, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        yield
+      end
+    end
+
+    def write_atomically(target)
+      dir = File.dirname(target)
+      Tempfile.create(['.config', '.tmp'], dir) do |tmp|
+        tmp.chmod(0o600)
+        tmp.write(YAML.dump(@data))
+        tmp.flush
+        tmp.fsync
+        File.rename(tmp.path, target)
+      end
+      File.open(dir) { |d| d.fsync }
+    rescue SystemCallError
+      nil # directory fsync is best effort
+    end
+
     def load_document(create)
       if File.exist?(@path)
-        doc = YAML.safe_load(File.read(@path), permitted_classes: [Symbol])
-        raise ConfigError, "Configuration file is empty or invalid: #{@path}" unless doc.is_a?(Hash)
+        doc = Config.read_document(@path)
         unless doc['version'] == Config::CURRENT_VERSION
           raise ConfigError, "#{@path} is not a v2 config; run `cert_manager.rb convert-config` first"
         end
@@ -90,13 +131,19 @@ module CertManager
       end
     end
 
-    def backup_existing
-      return unless File.exist?(@path)
+    def backup_existing(target)
+      return unless File.exist?(target)
 
-      backup = "#{@path}.#{Time.now.strftime('%Y%m%d%H%M%S')}.bak"
-      FileUtils.cp(@path, backup)
+      stamp = Time.now.strftime('%Y%m%d%H%M%S%L')
+      backup = "#{target}.#{stamp}.bak"
+      backup = "#{target}.#{stamp}-#{rand(1000)}.bak" while File.exist?(backup)
+      FileUtils.cp(target, backup)
       File.chmod(0o600, backup)
       backup
+    end
+
+    def prune_backups(target)
+      Dir["#{target}.*.bak"].sort.reverse.drop(BACKUPS_KEPT).each { |old| File.delete(old) }
     end
   end
 end

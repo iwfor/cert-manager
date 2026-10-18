@@ -76,7 +76,7 @@ end
 
 # Load configuration (v2 or legacy; secrets are decrypted by Config)
 begin
-  config = CertManager::Config.new(options[:config], warn_legacy: false)
+  config = CertManager::Config.new(options[:config], warnings: false)
 rescue CertManager::ConfigError => e
   puts "Error: #{e.message}"
   exit 1

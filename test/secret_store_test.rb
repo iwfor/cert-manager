@@ -55,7 +55,7 @@ class SecretStoreTest < Test::Unit::TestCase
   def test_refuses_insecure_key_file
     store
     File.chmod(0o644, @key_path)
-    assert_raise(SecurityError) { CertManager::SecretStore.new(@key_path) }
+    assert_raise(CertManager::SecretStore::Error) { CertManager::SecretStore.new(@key_path) }
   end
 
   def test_missing_key_without_create
@@ -72,7 +72,7 @@ class SecretStoreTest < Test::Unit::TestCase
   end
 
   def test_mask
-    assert_equal '****wxyz', CertManager::SecretStore.mask('abcdefghwxyz')
+    assert_equal '****', CertManager::SecretStore.mask('abcdefghwxyz')
     assert_equal '****', CertManager::SecretStore.mask('short')
   end
 

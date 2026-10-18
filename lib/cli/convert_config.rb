@@ -19,7 +19,7 @@ module CertManager
         store = nil
         unless dry_run
           confirm_overwrite(dest)
-          store = SecretStore.new(SecretStore.key_path_for(dest), create: true)
+          store = open_store(dest)
         end
         encryptor = dry_run ? ->(value) { "#{SecretStore.mask(value)} (will be encrypted)" } : store.method(:encrypt)
         result = ConfigMigrator.new(v1, encryptor: encryptor).migrate
@@ -49,8 +49,7 @@ module CertManager
 
       def read_v1(source)
         FilePermissions.check(source)
-        doc = YAML.safe_load(File.read(source), permitted_classes: [Symbol])
-        raise ConfigError, "Configuration file is empty or invalid: #{source}" unless doc.is_a?(Hash)
+        doc = Config.read_document(source)
         raise "#{source} is already a v2 configuration; nothing to convert" if doc.fetch('version', 1) != 1
 
         doc
@@ -66,10 +65,24 @@ module CertManager
       def write(dest, result)
         writer = ConfigWriter.new(dest, create: true)
         writer.data.replace(result.document)
-        writer.save
-        Config.new(dest, warn_legacy: false) # validates and proves the secrets decrypt
-      rescue ConfigError => e
-        raise "Converted file #{dest} failed validation: #{e.message}"
+        backup = writer.save
+        begin
+          Config.new(dest, warnings: false) # validates and proves the secrets decrypt
+        rescue ConfigError => e
+          restore(dest, backup)
+          raise "Converted file failed validation, so #{dest} was #{backup ? 'restored' : 'removed'} and your v1 config remains in use: #{e.message}"
+        end
+      end
+
+      # Undo a write whose result does not validate, so the invalid file cannot shadow the v1 config
+      def restore(dest, backup)
+        backup ? FileUtils.cp(backup, dest) : File.delete(dest)
+      end
+
+      def open_store(dest)
+        SecretStore.new(SecretStore.key_path_for(dest), create: true)
+      rescue SecretStore::Error => e
+        raise ConfigError, e.message
       end
 
       def print_preview(source, dest, result)

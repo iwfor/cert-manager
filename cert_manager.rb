@@ -12,10 +12,12 @@ require 'logger'
 require 'time'
 require 'openssl'
 require 'digest'
+require 'tmpdir'
 
 require_relative 'lib/dns_providers'
 require_relative 'lib/file_permissions'
 require_relative 'lib/config'
+require_relative 'lib/cli/prompt'
 
 module CertManager
   VERSION = '2.0.0'
@@ -220,9 +222,8 @@ module CertManager
 
       @logger.info("Cleaning up ACME challenge records for: #{domains.join(', ')}")
 
-      domains.each do |domain|
-        record_name = cert_config['dns_alias'] || "_acme-challenge.#{domain}"
-        @logger.info("Looking for TXT records: #{record_name}")
+      Config.routing_hosts(cert_config).uniq.each do |domain|
+        @logger.info("Looking for TXT records: _acme-challenge.#{domain}")
 
         begin
           count = provider.cleanup_challenge_records(domain)
@@ -257,9 +258,7 @@ module CertManager
         puts "This action cannot be undone. The certificate will be"
         puts "invalidated immediately and must be re-issued."
         puts ""
-        print "Are you sure you want to revoke? [y/N] "
-
-        unless $stdin.gets&.strip&.downcase == 'y'
+        unless CLI::Prompt.confirm('Are you sure you want to revoke?')
           puts "Aborted."
           return
         end
@@ -394,7 +393,7 @@ module CertManager
     # @return [String] Ruby source code fragment
     def hook_script_preamble
       <<~'RUBY'
-        config = CertManager::Config.new(ENV["CERT_MANAGER_CONFIG"], warn_legacy: false)
+        config = CertManager::Config.new(ENV["CERT_MANAGER_CONFIG"], warnings: false)
         provider_config = config.dns_providers[ENV["CERT_MANAGER_PROVIDER"]]
         provider = CertManager::DNSProviders.create(
           provider_config["type"],
@@ -440,9 +439,7 @@ module CertManager
           puts "that your DNS configuration is correct without using up your"
           puts "Let's Encrypt rate limits (5 failures per hour for production)."
           puts ""
-          print "Continue with production certificate? [y/N] "
-
-          unless $stdin.gets&.strip&.downcase == 'y'
+          unless CLI::Prompt.confirm('Continue with production certificate?')
             puts "Aborted. Use --staging to request a test certificate first."
             return
           end
@@ -551,6 +548,7 @@ module CertManager
         'CERT_MANAGER_PROPAGATION_WAIT' => @config.propagation_wait.to_s
       }
       env['CERT_MANAGER_DNS_ALIAS'] = dns_alias if dns_alias
+      env['CERT_MANAGER_STATE_DIR'] = hook_dir
 
       # Record the cert serial before certbot runs so we can detect if it changed
       cert_name = cert_name_for(cert_config)
@@ -596,6 +594,8 @@ module CertManager
       deploy_certificate(cert_config) if cert_config['deploy']&.any?
 
       @logger.info("Certificate obtained successfully!")
+    ensure
+      remove_hook_dir
     end
 
     # Generate the certbot manual auth hook script that adds DNS TXT records
@@ -609,6 +609,7 @@ module CertManager
       script = <<~RUBY
         #!/usr/bin/env ruby
         require 'yaml'
+        require 'digest'
         require '#{lib_path}'
 
         begin
@@ -616,12 +617,14 @@ module CertManager
           domain = ENV["CERTBOT_DOMAIN"]
           validation = ENV["CERTBOT_VALIDATION"]
           record_name = ENV["CERT_MANAGER_DNS_ALIAS"] || "_acme-challenge.\#{domain}"
+          # Zone lookups use the name the challenge is created under (the alias when set)
+          zone_domain = ENV["CERT_MANAGER_DNS_ALIAS"] ? ENV["CERT_MANAGER_DNS_ALIAS"].delete_prefix("_acme-challenge.") : domain
 
           puts "Adding TXT record: \#{record_name} = \#{validation}"
-          record_id = provider.add_txt_record(domain, record_name, validation)
+          record_id = provider.add_txt_record(zone_domain, record_name, validation)
 
           # Store record ID for cleanup
-          File.write("/tmp/certbot_record_\#{domain}", record_id.to_s)
+          File.write(File.join(ENV.fetch("CERT_MANAGER_STATE_DIR"), "record_\#{domain}_\#{Digest::SHA256.hexdigest(validation)[0, 12]}"), record_id.to_s)
           puts "Record ID saved: \#{record_id}"
 
           # Wait for propagation
@@ -648,6 +651,7 @@ module CertManager
       script = <<~RUBY
         #!/usr/bin/env ruby
         require 'yaml'
+        require 'digest'
         require '#{lib_path}'
 
         begin
@@ -655,11 +659,12 @@ module CertManager
           domain = ENV["CERTBOT_DOMAIN"]
           validation = ENV["CERTBOT_VALIDATION"]
 
-          record_id_file = "/tmp/certbot_record_\#{domain}"
+          zone_domain = ENV["CERT_MANAGER_DNS_ALIAS"] ? ENV["CERT_MANAGER_DNS_ALIAS"].delete_prefix("_acme-challenge.") : domain
+          record_id_file = File.join(ENV.fetch("CERT_MANAGER_STATE_DIR"), "record_\#{domain}_\#{Digest::SHA256.hexdigest(validation)[0, 12]}")
           if File.exist?(record_id_file)
             record_id = File.read(record_id_file).strip
             puts "Removing TXT record: \#{record_id} for \#{domain}"
-            provider.remove_txt_record(domain, record_id, validation)
+            provider.remove_txt_record(zone_domain, record_id, validation)
             File.delete(record_id_file)
             puts "TXT record removed successfully"
           else
@@ -680,10 +685,20 @@ module CertManager
     # @param content [String] Script content
     # @return [String] Path to the created script
     def write_temp_script(name, content)
-      path = "/tmp/cert_manager_#{name}_#{$$}"
-      File.write(path, content)
-      File.chmod(0o755, path)
+      path = File.join(hook_dir, name)
+      File.open(path, File::CREAT | File::EXCL | File::WRONLY, 0o700) { |f| f.write(content) }
       path
+    end
+
+    # Private (0700) directory holding hook scripts and per-challenge record ids
+    # @return [String]
+    def hook_dir
+      @hook_dir ||= Dir.mktmpdir('cert_manager_hooks')
+    end
+
+    def remove_hook_dir
+      FileUtils.remove_entry(@hook_dir) if @hook_dir && File.directory?(@hook_dir)
+      @hook_dir = nil
     end
 
     # Create certbot config, work, and log directories if they don't exist

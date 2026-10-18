@@ -66,8 +66,14 @@ module CertManager
         raise 'Aborted; existing configuration left untouched'
       end
 
+      legacy = File.join(File.dirname(path), File.basename(Config::LEGACY_CONFIG_PATH))
+      if File.exist?(legacy) && !File.exist?(path) && !ctx.options[:yes]
+        raise "A v1 config exists at #{legacy}; a new v2 file would take precedence over it and ignore your certificates.\n" \
+              "Run `#{CLI.program} convert-config` to migrate it (or pass --yes to create an empty v2 config anyway)."
+      end
+
       email = ctx.options[:email] || ($stdin.tty? ? Prompt.ask("Email for Let's Encrypt notifications") : '')
-      email = 'admin@example.com' if email.empty?
+      raise UsageError, 'An email address is required: pass --email ADDRESS' if email.empty?
 
       writer = ConfigWriter.new(path, create: true)
       writer.data.replace(
@@ -81,7 +87,6 @@ module CertManager
 
       puts "Configuration written to: #{path}"
       puts "Encryption key:           #{key_path}  (back this up; secrets cannot be recovered without it)"
-      puts "Email:                    #{email}  (edit the file to change it)" if email == 'admin@example.com'
       puts
       puts "Next: #{CLI.program} add-provider NAME --type cloudflare"
     end

@@ -83,10 +83,9 @@ module CertManager
       raise Error, "Could not decrypt secret with #{@key_path} (wrong key or corrupted value)"
     end
 
-    # Mask a secret for display, e.g. "****abcd"
-    def self.mask(value)
-      value = value.to_s
-      value.length > 8 ? "****#{value[-4..]}" : '****'
+    # Placeholder for displaying a secret; reveals nothing about its content
+    def self.mask(_value = nil)
+      '****'
     end
 
     private
@@ -94,7 +93,11 @@ module CertManager
     def load_key
       raise Error, "Key file not found: #{@key_path}" unless File.exist?(@key_path)
 
-      FilePermissions.require_private!(@key_path)
+      begin
+        FilePermissions.require_private!(@key_path)
+      rescue SecurityError => e
+        raise Error, e.message
+      end
       key = Base64.strict_decode64(File.read(@key_path).strip)
       raise Error, "Key file #{@key_path} is invalid (expected #{KEY_BYTES} bytes)" unless key.bytesize == KEY_BYTES
 

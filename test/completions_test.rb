@@ -141,4 +141,45 @@ class CompletionsTest < Test::Unit::TestCase
     assert status.success?, err
     assert_equal 'web bare.example.com', out.strip
   end
+  def run_bash_completion(words, exe: File.expand_path('../cert_manager.rb', __dir__))
+    script = CertManager::Completions.generate('bash', program: 'cert_manager.rb', executable: exe)
+    driver = <<~SH
+      #{script}
+      COMP_WORDS=(#{words.map { |w| Shellwords.escape(w) }.join(' ')})
+      COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 ))
+      _cert_manager_rb
+      printf '%s\\n' "${COMPREPLY[@]}"
+    SH
+    out, err, status = Open3.capture3('bash', stdin_data: driver)
+    assert status.success?, err
+    out.lines.map(&:chomp)
+  end
+
+  def test_bash_completion_never_executes_configured_names
+    skip 'bash not available' unless system('command -v bash >/dev/null 2>&1')
+    marker = File.join(@dir, 'PWNED')
+    doc = YAML.load_file(@config)
+    doc['certificates'] = [{ 'name' => "$(touch #{marker})", 'domains' => ['a.example.com'] },
+                           { 'name' => 'has space', 'domains' => ['b.example.com'] },
+                           { 'name' => '*.glob', 'domains' => ['c.example.com'] }]
+    File.write(@config, YAML.dump(doc))
+    replies = run_bash_completion(['cert_manager.rb', '-c', @config, 'request', ''])
+    assert !File.exist?(marker), 'a configured name was executed by the completion script'
+    assert_equal 3, replies.size
+    assert_include replies, 'has\ space'
+  end
+
+  def test_bash_completion_understands_config_equals_form
+    skip 'bash not available' unless system('command -v bash >/dev/null 2>&1')
+    assert_equal %w[web bare.example.com], run_bash_completion(['cert_manager.rb', "--config=#{@config}", 'request', ''])
+  end
+
+  def test_zone_completion_uses_the_provider_even_with_flags_between
+    skip 'bash not available' unless system('command -v bash >/dev/null 2>&1')
+    assert_equal ['example.com'], run_bash_completion(['cert_manager.rb', '-c', @config, 'remove-zone', 'cf', '--force', ''])
+  end
+
+  def test_repeatable_options_are_marked_in_zsh
+    assert_match(/'\*--zone\[/, script('zsh'))
+  end
 end

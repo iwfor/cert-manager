@@ -64,6 +64,7 @@ module CertManager
         klass = provider_class(provider['type'])
         zone = Config.normalize_zone(zone)
         ensure_zone_free(zone)
+        guard_certificates(@writer.zones_by_provider.merge(name => @writer.zones_by_provider[name] + [zone]), "Adding zone #{zone} to '#{name}'")
 
         credentials = provider['credentials'] ||= {}
         if (zone_id = @options[:zone_id])
@@ -89,7 +90,7 @@ module CertManager
         raise "Provider '#{name}' has no zone #{zone} (zones: #{(provider['zones'] || []).join(', ')})" unless @writer.zones_by_provider[name].include?(zone)
 
         after = @writer.zones_by_provider.merge(name => @writer.zones_by_provider[name] - [zone])
-        guard_certificates(after, "zone #{zone}")
+        guard_certificates(after, "Removing zone #{zone}")
         return puts "Dry run: would remove zone #{zone} from provider '#{name}'" if @options[:dry_run]
 
         provider['zones'] = after[name]
@@ -99,7 +100,7 @@ module CertManager
       def remove_provider(name)
         @writer.provider!(name)
         after = @writer.zones_by_provider.reject { |n, _| n == name }
-        guard_certificates(after, "provider '#{name}'", removed: name)
+        guard_certificates(after, "Removing provider '#{name}'", removed: name)
         return puts "Dry run: would remove provider '#{name}'" if @options[:dry_run]
         unless Prompt.confirm("Remove provider '#{name}' and its stored credentials?", assume_yes: @options[:yes])
           raise 'Aborted; provider left in place'
@@ -116,7 +117,7 @@ module CertManager
 
         @writer.providers.each do |name, settings|
           klass = DNSProviders.registered?(settings['type']) ? DNSProviders[settings['type']] : nil
-          secrets = klass ? klass.secret_credentials : []
+          secrets = klass ? klass.secret_credentials : nil # unknown type: hide every value
           zones = settings['zones'] || []
           puts "#{name}  (#{settings['type']})"
           puts "  zones: #{zones.empty? ? '(none)' : zones.join(', ')}"
@@ -136,7 +137,7 @@ module CertManager
 
       def describe_credential(key, value, secrets)
         if SecretStore.encrypted?(value) then '[encrypted]'
-        elsif secrets.include?(key.to_s) then '[PLAINTEXT - run update-provider-key to encrypt]'
+        elsif secrets.nil? || secrets.include?(key.to_s) then '[PLAINTEXT - run update-provider-key to encrypt]'
         else value
         end
       end
@@ -196,27 +197,28 @@ module CertManager
         puts 'Verifying with the provider...' unless @options[:quiet]
         ok = provider.verify_credentials(zones)
         warn 'Note: nothing to check yet (no zones); credentials were not verified.' if !ok && !@options[:quiet]
-      rescue ArgumentError, DNSProviders::DNSProviderError => e
+      rescue StandardError => e
         raise "Verification failed: #{e.message}\nNothing was saved. Re-run with --no-verify to save anyway."
       end
 
-      # Refuse changes that would leave a certificate without its provider, unless --force
-      def guard_certificates(zones_after, what, removed: nil)
+      # Refuse changes that would change which provider serves a certificate, unless --force
+      def guard_certificates(zones_after, change, removed: nil)
         before = @writer.zones_by_provider
-        broken = (@writer.data['certificates'] || []).filter_map do |cert|
-          label = cert['name'] || cert['domains']&.first
-          explicit = cert['dns_provider']
-          if explicit
-            label if explicit == removed
+        changed = (@writer.data['certificates'] || []).filter_map do |cert|
+          next unless cert.is_a?(Hash) && cert['domains'].is_a?(Array) && cert['domains'].all?(String)
+
+          label = cert['name'] || cert['domains'].first
+          if cert['dns_provider']
+            label if cert['dns_provider'] == removed
           else
             hosts = Config.routing_hosts(cert)
             was = hosts.map { |h| Config.provider_for_host(h, before) }
             label if was.uniq != hosts.map { |h| Config.provider_for_host(h, zones_after) }.uniq
           end
         end
-        return if broken.empty? || @options[:force]
+        return if changed.empty? || @options[:force]
 
-        raise "Removing #{what} would leave certificate(s) without a DNS provider: #{broken.join(', ')} (use --force to remove anyway)"
+        raise "#{change} would change the DNS provider of certificate(s): #{changed.join(', ')} (use --force to apply anyway)"
       end
 
       def save(message)
@@ -267,8 +269,8 @@ module CertManager
               option(:zone_id, long: '--zone-id', arg: 'ID', desc: 'Provider zone identifier (cloudflare zone_id, route53 hosted_zone_id, cloud_dns managed_zone)'),
               option(:no_verify, long: '--no-verify', desc: 'Skip the check against the provider API')
             ],
-            globals: common,
-            description: 'Certificates are routed to the provider whose zone is the longest match for their domains.',
+            globals: common + [:force],
+            description: "Certificates are routed to the provider whose zone is the longest match for their domains.\nRefuses if it would move an existing certificate to another provider, unless --force.",
             examples: ['add-zone cloudflare-main example.net'] do |ctx|
       ProviderCommands.new(ctx.options).add_zone(*ctx.args)
     end

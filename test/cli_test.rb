@@ -146,6 +146,40 @@ class ConvertConfigCLITest < Test::Unit::TestCase
     assert_equal 'very-secret-token-1234', config.dns_providers['test_cf']['api_token']
   end
 
+  def test_single_label_domain_converts_with_explicit_provider
+    v1 = write_config(@dir, 'certificates' => [{ 'name' => 'intra', 'domains' => ['intranet'], 'dns_provider' => 'test_cf' }])
+    status, _, err = run_cli('-c', v1, 'convert-config')
+    assert_equal 0, status, err
+    assert_equal 'test_cf', YAML.load_file(@v2)['certificates'].first['dns_provider']
+    assert_equal 'test_cf', CertManager::Config.new(@v2).provider_name_for({ 'domains' => ['intranet'], 'dns_provider' => 'test_cf' })
+  end
+
+  def test_failed_validation_leaves_no_v2_file_shadowing_v1
+    v1 = write_config(@dir, 'certificates' => [{ 'name' => 'x', 'domains' => ['a.example.com'], 'dns_provider' => 'test_cf', 'environment' => 'bogus' }])
+    status, _, err = run_cli('-c', v1, 'convert-config')
+    assert_equal 1, status
+    assert_match(/failed validation/, err)
+    assert(!File.exist?(@v2))
+  end
+
+  def test_failed_validation_restores_an_existing_v2_file
+    File.write(@v2, YAML.dump('version' => 2, 'marker' => 'keep me'))
+    v1 = write_config(@dir, 'certificates' => [{ 'name' => 'x', 'domains' => ['a.example.com'], 'dns_provider' => 'test_cf', 'environment' => 'bogus' }])
+    status, = run_cli('-y', '-c', v1, 'convert-config')
+    assert_equal 1, status
+    assert_equal 'keep me', YAML.load_file(@v2)['marker']
+  end
+
+  def test_insecure_key_file_is_a_clean_error
+    key = File.join(@dir, 'cert-manager.key')
+    CertManager::SecretStore.generate_key(key)
+    File.chmod(0o644, key)
+    status, _, err = run_cli('-c', @v1, 'convert-config')
+    assert_equal 1, status
+    assert_match(/insecure permissions/, err)
+    assert_no_match(/\.rb:\d+/, err)
+  end
+
   def test_original_file_is_untouched
     before = File.read(@v1)
     run_cli('-c', @v1, 'convert-config')
@@ -158,7 +192,7 @@ class ConvertConfigCLITest < Test::Unit::TestCase
     assert(!(File.exist?(@v2)))
     assert(!(File.exist?(File.join(@dir, 'cert-manager.key'))))
     assert_no_match(/very-secret-token-1234/, out)
-    assert_match(/\*\*\*\*1234/, out)
+    assert_match(/\*\*\*\* \(will be encrypted\)/, out)
   end
 
   def test_refuses_to_overwrite_without_confirmation
@@ -181,4 +215,38 @@ class ConvertConfigCLITest < Test::Unit::TestCase
     assert_equal 1, status
     assert_match(/not found/, err)
   end
+class InitGuardsCLITest < Test::Unit::TestCase
+  include TestFixtures
+
+  def setup
+    @dir = Dir.mktmpdir('cert_manager_init')
+    @v2 = File.join(@dir, 'config.v2.yml')
+  end
+
+  def teardown
+    FileUtils.rm_rf(@dir)
+  end
+
+  def test_init_requires_an_email_when_not_interactive
+    status, _, err = run_cli('-c', @v2, 'init')
+    assert_equal 2, status
+    assert_match(/--email/, err)
+    assert(!File.exist?(@v2))
+  end
+
+  def test_init_does_not_shadow_an_existing_v1_config
+    write_config(@dir)
+    status, _, err = run_cli('-c', @v2, 'init', '--email', 'a@example.org')
+    assert_equal 1, status
+    assert_match(/convert-config/, err)
+    assert(!File.exist?(@v2))
+    assert_equal 0, run_cli('-y', '-c', @v2, 'init', '--email', 'a@example.org').first
+  end
+
+  def test_version_flag_is_accepted_after_the_command
+    status, out, = run_cli('renew', '-V')
+    assert_equal 0, status
+    assert_match(/CertManager v/, out)
+  end
+end
 end

@@ -270,4 +270,44 @@ def test_verify_command_fails_when_a_provider_is_rejected
   assert_match(/FAILED: Invalid token/, out)
   assert_match(/1 provider\(s\) failed/, err)
 end
+  def test_add_zone_that_would_reroute_a_certificate_requires_force
+    add_cloudflare('cf', '--zone', 'example.com')
+    cli('add-provider', 'dh', '--type', 'dreamhost', '--no-verify', '--key-stdin', stdin: "k\n")
+    File.write(@config, YAML.dump(raw.merge('certificates' => [{ 'name' => 'w', 'domains' => ['a.example.com'] }])))
+    status, _, err = cli('add-zone', 'dh', 'a.example.com', '--no-verify')
+    assert_equal 1, status
+    assert_match(/change the DNS provider of certificate\(s\): w/, err)
+    assert_equal [], raw['providers']['dh']['zones']
+    assert_equal 0, cli('add-zone', 'dh', 'a.example.com', '--no-verify', '--force').first
+  end
+
+  def test_unrelated_zone_does_not_need_force
+    add_cloudflare('cf', '--zone', 'example.com')
+    File.write(@config, YAML.dump(raw.merge('certificates' => [{ 'name' => 'w', 'domains' => ['a.example.com'] }])))
+    assert_equal 0, cli('add-zone', 'cf', 'example.net').first
+  end
+
+  def test_no_command_output_ever_contains_the_secret
+    outputs = []
+    outputs << add_cloudflare('cf', '--zone', 'example.com')
+    outputs << cli('list-providers')
+    outputs << cli('update-provider-key', 'cf', '--key-stdin', '--verbose', stdin: "#{SECRET}\n")
+    outputs << cli('add-provider', 'x', '--type', 'cloudflare', '--key-stdin', '--dry-run', '--verbose', stdin: "#{SECRET}\n")
+    outputs << cli('verify')
+    outputs.flatten.each { |text| assert_no_match(/#{SECRET}|cf-super/, text.to_s) }
+  end
+
+  def test_list_providers_hides_all_values_of_unknown_types
+    File.write(@config, YAML.dump(raw.merge('providers' => { 'x' => { 'type' => 'mystery', 'credentials' => { 'token' => 'visible-secret' } } })))
+    _, out, = cli('list-providers')
+    assert_no_match(/visible-secret/, out)
+  end
+
+  def test_verification_errors_from_sdks_are_reported_cleanly
+    CertManager::DNSProviders::Cloudflare.define_method(:verify_credentials) { |_zones = []| raise IOError, 'sdk exploded' }
+    status, _, err = add_cloudflare
+    assert_equal 1, status
+    assert_match(/Verification failed: sdk exploded/, err)
+    assert_equal({}, raw['providers'] || {})
+  end
 end

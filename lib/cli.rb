@@ -141,7 +141,7 @@ module CertManager
       rescue Interrupt
         warn
         130
-      rescue StandardError => e
+      rescue StandardError, SecurityError => e
         warn "Error: #{e.message}"
         EXIT_ERROR
       end
@@ -233,6 +233,7 @@ module CertManager
         OptionParser.new do |p|
           register_globals(p, options)
           cmd.options.each { |o| register(p, o, options) }
+          register(p, version_option, options) { raise HelpRequested, "CertManager v#{CertManager::VERSION}" }
           p.on('-h', '--help') { raise HelpRequested, command_help(cmd) }
         end
       end

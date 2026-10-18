@@ -167,9 +167,9 @@ class ConfigV2Test < Test::Unit::TestCase
     assert_match(/convert-config/, err)
   end
 
-  def test_warn_legacy_can_be_disabled
+  def test_warnings_can_be_disabled
     legacy = write_config(@dir)
-    _, err = capture_stdout_and_stderr { CertManager::Config.new(legacy, warn_legacy: false) }
+    _, err = capture_stdout_and_stderr { CertManager::Config.new(legacy, warnings: false) }
     assert_no_match(/DEPRECATED/, err)
   end
 
@@ -202,4 +202,17 @@ class ConfigV2Test < Test::Unit::TestCase
   end
 
   include TestFixtures
+  def test_plaintext_warning_is_silent_when_warnings_are_disabled
+    providers = { 'a' => { 'type' => 'dreamhost', 'credentials' => { 'api_key' => 'plain' }, 'zones' => ['example.com'] } }
+    write_v2('providers' => providers, 'certificates' => [])
+    _, err = capture_stdout_and_stderr { CertManager::Config.new(@path, warnings: false) }
+    assert_equal '', err
+  end
+
+  def test_read_document_errors
+    File.write(@path, ": : [ not yaml")
+    assert_raise(CertManager::ConfigError) { CertManager::Config.read_document(@path) }
+    File.write(@path, '')
+    assert_raise(CertManager::ConfigError) { CertManager::Config.read_document(@path) }
+  end
 end

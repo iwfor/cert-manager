@@ -169,6 +169,19 @@ zone is shared with another provider keep an explicit `dns_provider`. Your old f
 once `verify` passes, delete or archive it (it still contains plaintext keys). `config.v2.yml` takes
 precedence over `config.yml` when both exist.
 
+## Behavior changes from 1.x
+
+- `--staging` together with `--production` is now an error (it used to silently use the last one given).
+- A missing or unknown command, or a bad option, exits with status `2` (was `1`); errors go to stderr.
+- `init` creates a v2 config, needs `--email` when not run interactively, and refuses to create a v2 file next to an
+  existing `config.yml` (it would take precedence and ignore your certificates) unless you pass `--yes`; use `convert-config` instead.
+- The v1 deprecation notice is printed even with `--quiet`, so cron mails it until you convert.
+- Hook scripts and per-challenge record ids now live in a private temporary directory instead of predictable `/tmp` names.
+- With `dns_alias`, provider zone lookups (and `cleanup`) use the alias zone, which is where the challenge record is created.
+- `cleanup` and DNS lookups for wildcard domains no longer include the `*.` prefix.
+- Management commands keep the 10 most recent timestamped `.bak` files, refuse to overwrite a config that changed while they ran,
+  and write through a symlinked config file.
+
 ## Shell completions
 
 Completions for bash and zsh are generated from the command definitions, so they always match the installed version:

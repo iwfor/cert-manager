@@ -44,6 +44,17 @@ module CertManager
       DEFAULT_CONFIG_PATH
     end
 
+      # Parse a configuration file into its top-level mapping (no validation)
+      # @raise [ConfigError] if the file cannot be parsed or is not a mapping
+      def self.read_document(path)
+        doc = YAML.safe_load(File.read(path), permitted_classes: [Symbol])
+        raise ConfigError, "Configuration file is empty or invalid: #{path}" unless doc.is_a?(Hash)
+
+        doc
+      rescue Psych::SyntaxError => e
+        raise ConfigError, "Configuration file is not valid YAML: #{path} (#{e.message})"
+      end
+
     # Where commands that create a v2 config (init, convert-config) should write:
     # explicit path, $CERT_MANAGER_CONFIG, then the default v2 path.
     def self.default_write_path(explicit = nil)
@@ -105,10 +116,10 @@ module CertManager
     end
 
     # @param path [String, nil] Path to config file, resolved with Config.resolve_path
-    # @param warn_legacy [Boolean] Print the v1 deprecation notice (hook scripts disable it)
-    def initialize(path = nil, warn_legacy: true)
+    # @param warnings [Boolean] Print the v1 deprecation and plaintext-secret notices (hook scripts disable them)
+    def initialize(path = nil, warnings: true)
       @path = Config.resolve_path(path)
-      @warn_legacy = warn_legacy
+      @warnings = warnings
       load_config
     end
 
@@ -170,18 +181,14 @@ module CertManager
 
       FilePermissions.check(@path)
 
-      config = YAML.safe_load(File.read(@path), permitted_classes: [Symbol])
-
-      unless config.is_a?(Hash)
-        raise ConfigError, "Configuration file is empty or invalid: #{@path}"
-      end
+      config = Config.read_document(@path)
 
       @version = config.fetch('version', 1)
       unless [1, CURRENT_VERSION].include?(@version)
         raise ConfigError, "Unsupported config version #{@version.inspect} in #{@path} (supported: 1, #{CURRENT_VERSION})"
       end
 
-      warn_deprecated if legacy? && @warn_legacy
+      warn_deprecated if legacy? && @warnings
 
       @dns_providers = legacy? ? (config['dns_providers'] || {}) : load_v2_providers(config['providers'] || {})
       @certificates = config['certificates'] || []
@@ -227,7 +234,7 @@ module CertManager
             store ||= open_secret_store
             [key, store.decrypt(value)]
           else
-            warn "WARNING: #{name}.#{key} is stored in plaintext; run `update-provider-key #{name}` to encrypt it." if secrets.include?(key.to_s)
+            warn "WARNING: #{name}.#{key} is stored in plaintext; run `update-provider-key #{name}` to encrypt it." if @warnings && secrets.include?(key.to_s)
             [key, value]
           end
         end
