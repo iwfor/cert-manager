@@ -44,6 +44,10 @@ module CertManager
         %w[project_id managed_zone]
       end
 
+      def self.zone_credential
+        'managed_zone'
+      end
+
       def initialize(name, credentials)
         super
         @project_id = credentials['project_id']

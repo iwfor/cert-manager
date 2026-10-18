@@ -4,6 +4,7 @@ require 'yaml'
 require 'tempfile'
 require 'fileutils'
 require_relative 'config'
+require_relative 'secret_store'
 
 module CertManager
   # Reads and rewrites a v2 configuration file for the management commands
@@ -23,6 +24,36 @@ module CertManager
     # Raw `providers` mapping (name => settings)
     def providers
       @data['providers'] ||= {}
+    end
+
+    # Raw settings of a provider
+    # @raise [ConfigError] if it is not configured
+    def provider!(name)
+      providers[name] or raise ConfigError, "Unknown provider '#{name}' (configured: #{providers.keys.join(', ').then { |n| n.empty? ? 'none' : n }})"
+    end
+
+    # Normalized zones of every provider, e.g. { 'cf' => ['example.com'] }
+    def zones_by_provider
+      providers.transform_values { |settings| (settings['zones'] || []).map { |z| Config.normalize_zone(z) } }
+    end
+
+    # True if any credential in the file is an ENC[...] secret
+    def encrypted_values?
+      providers.values.any? { |s| (s['credentials'] || {}).values.any? { |v| SecretStore.encrypted?(v) } }
+    end
+
+    # Open the file's secret store, creating the key only when nothing is
+    # encrypted yet (a fresh key would orphan existing secrets).
+    def secret_store
+      key_path = SecretStore.key_path_for(@path)
+      SecretStore.new(key_path, create: !encrypted_values?)
+    rescue SecretStore::Error, SecurityError => e
+      raise ConfigError, e.message
+    end
+
+    # A provider's credentials with secrets decrypted
+    def plain_credentials(name, store)
+      (provider!(name)['credentials'] || {}).transform_values { |v| SecretStore.encrypted?(v) ? store.decrypt(v) : v }
     end
 
     # Atomically write the document with owner-only permissions, keeping a
@@ -55,7 +86,7 @@ module CertManager
       elsif create
         { 'version' => Config::CURRENT_VERSION }
       else
-        raise ConfigError, "Configuration file not found: #{@path}"
+        raise ConfigError, "Configuration file not found: #{@path}\nRun `cert_manager.rb init` to create one."
       end
     end
 

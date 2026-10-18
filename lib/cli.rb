@@ -30,7 +30,7 @@ module CertManager
 
     # A command-line flag. `key` is where its value lands in the options hash.
     # `values` lists the allowed values (also used for completion).
-    Option = Struct.new(:key, :short, :long, :arg, :desc, :values, keyword_init: true) do
+    Option = Struct.new(:key, :short, :long, :arg, :desc, :values, :multiple, keyword_init: true) do
       def flags
         [short, long].compact
       end
@@ -105,8 +105,8 @@ module CertManager
         Arg.new(name: name, kind: kind, required: required, desc: desc)
       end
 
-      def option(key, long:, short: nil, arg: nil, desc:, values: nil)
-        Option.new(key: key, short: short, long: long, arg: arg, desc: desc, values: values)
+      def option(key, long:, short: nil, arg: nil, desc:, values: nil, multiple: false)
+        Option.new(key: key, short: short, long: long, arg: arg, desc: desc, values: values, multiple: multiple)
       end
 
       def program
@@ -243,7 +243,10 @@ module CertManager
         spec = opt.long + (opt.arg ? " #{opt.arg}" : '')
         args = [opt.short, spec, opt.values].compact
         parser.on(*args) do |value|
-          block ? block.call : options[opt.key] = (opt.arg ? value : true)
+          if block then block.call
+          elsif opt.multiple then (options[opt.key] ||= []) << value
+          else options[opt.key] = (opt.arg ? value : true)
+          end
         end
       end
 
@@ -270,3 +273,4 @@ end
 
 require_relative 'cli/convert_config'
 require_relative 'cli/commands'
+require_relative 'cli/provider_commands'

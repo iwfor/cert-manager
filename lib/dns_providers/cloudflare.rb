@@ -33,6 +33,10 @@ module CertManager
         ['api_token']
       end
 
+      def self.zone_credential
+        'zone_id'
+      end
+
       def self.secret_credentials
         ['api_token']
       end

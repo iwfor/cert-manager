@@ -112,6 +112,12 @@ module CertManager
       load_config
     end
 
+    # Zones configured for a provider (always empty for v1 configs)
+    # @return [Array<String>]
+    def zones(provider)
+      zones_by_provider[provider] || []
+    end
+
     # Name of the DNS provider that serves a certificate: its explicit
     # `dns_provider`, otherwise the provider owning the longest matching zone
     # for every domain (or for the dns_alias target, where challenges are placed).

@@ -11,6 +11,20 @@ require 'stringio'
 require_relative '../cert_manager'
 
 module TestFixtures
+  # Run the CLI in-process, returning [exit_status, stdout, stderr]
+  def run_cli(*argv, stdin: '')
+    out = StringIO.new
+    err = StringIO.new
+    old = [$stdout, $stderr, $stdin]
+    $stdout = out
+    $stderr = err
+    $stdin = StringIO.new(stdin)
+    status = CertManager::CLI.run(argv)
+    [status, out.string, err.string]
+  ensure
+    $stdout, $stderr, $stdin = old
+  end
+
   # Write a minimal valid config file and return its path
   def write_config(dir, overrides = {})
     config = {

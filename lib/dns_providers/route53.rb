@@ -45,6 +45,10 @@ module CertManager
         ['hosted_zone_id']
       end
 
+      def self.zone_credential
+        'hosted_zone_id'
+      end
+
       def self.secret_credentials
         %w[secret_access_key session_token]
       end

@@ -193,24 +193,18 @@ module CertManager
 
     # Verify DNS provider credentials
     def verify_providers
-      @config.dns_providers.each do |name, _|
+      failures = 0
+      @config.dns_providers.each_key do |name|
         provider = @providers[name]
         print "Verifying #{name} (#{provider.class.provider_type})... "
-
         begin
-          # Try a simple operation to verify credentials
-          case provider
-          when DNSProviders::Cloudflare
-            # List zones to verify token
-            provider.send(:get_zone_id, 'example.com')
-          when DNSProviders::Dreamhost
-            provider.list_records
-          end
-          puts "OK"
+          puts(provider.verify_credentials(@config.zones(name)) ? 'OK' : 'UNVERIFIED (add a zone to test this provider)')
         rescue StandardError => e
+          failures += 1
           puts "FAILED: #{e.message}"
         end
       end
+      raise "#{failures} provider(s) failed verification" if failures.positive?
     end
 
     # Clean up leftover ACME challenge records for a certificate

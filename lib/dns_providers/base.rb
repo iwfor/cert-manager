@@ -90,6 +90,30 @@ module CertManager
         []
       end
 
+      # Credential key that pins the provider to a single zone (nil when it can serve many)
+      # @return [String, nil]
+      def self.zone_credential
+        nil
+      end
+
+      # Check the credentials with a read-only API call. With zones, each zone is
+      # looked up (proving auth and that the zone exists); without, a provider
+      # listing is used when available.
+      # @param zones [Array<String>] zones configured for this provider
+      # @return [Boolean] true when verified, false when nothing could be checked
+      # @raise [DNSProviderError] when the provider rejects the request
+      def verify_credentials(zones = [])
+        if zones.any?
+          zones.each { |zone| find_txt_records(zone, "_acme-challenge.#{zone}") }
+          true
+        elsif respond_to?(:list_records)
+          list_records
+          true
+        else
+          false
+        end
+      end
+
       # Remove all ACME challenge records for a domain
       # Default implementation works for providers whose find_txt_records returns
       # records with :id or :value keys. Override for providers with custom logic.

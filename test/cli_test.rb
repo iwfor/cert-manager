@@ -3,6 +3,8 @@
 require_relative 'test_helper'
 
 class CLITest < Test::Unit::TestCase
+  include TestFixtures
+
   def setup
     @dir = Dir.mktmpdir('cert_manager_cli')
     @config = File.join(@dir, 'config.v2.yml')
@@ -10,20 +12,6 @@ class CLITest < Test::Unit::TestCase
 
   def teardown
     FileUtils.rm_rf(@dir)
-  end
-
-  # Run the CLI in-process, returning [exit_status, stdout, stderr]
-  def run_cli(*argv)
-    out = StringIO.new
-    err = StringIO.new
-    old = [$stdout, $stderr, $stdin]
-    $stdout = out
-    $stderr = err
-    $stdin = StringIO.new('')
-    status = CertManager::CLI.run(argv)
-    [status, out.string, err.string]
-  ensure
-    $stdout, $stderr, $stdin = old
   end
 
   def test_no_command_prints_help_and_exits_usage
@@ -144,18 +132,6 @@ class ConvertConfigCLITest < Test::Unit::TestCase
 
   def teardown
     FileUtils.rm_rf(@dir)
-  end
-
-  def run_cli(*argv)
-    out = StringIO.new
-    err = StringIO.new
-    old = [$stdout, $stderr, $stdin]
-    $stdout = out
-    $stderr = err
-    $stdin = StringIO.new('')
-    [CertManager::CLI.run(argv), out.string, err.string]
-  ensure
-    $stdout, $stderr, $stdin = old
   end
 
   def test_converts_and_encrypts_secrets
