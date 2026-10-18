@@ -252,11 +252,14 @@ module CertManager
     end
 
     # Request a new certificate
-    def request(cert_name)
+    # @param force [Boolean] If true, pass --force-renewal to certbot so it
+    #   reissues even if a valid, non-expiring-soon certificate already exists
+    #   for these domains under this cert name
+    def request(cert_name, force: false)
       cert_config = find_certificate(cert_name)
       raise "Certificate '#{cert_name}' not found in configuration" unless cert_config
 
-      request_certificate(cert_config)
+      request_certificate(cert_config, force: force)
     end
 
     # Deploy a certificate to its configured targets
@@ -346,7 +349,7 @@ module CertManager
 
         if force || certificate_needs_renewal?(cert_config)
           @logger.info("Renewing certificate: #{name}")
-          request_certificate(cert_config)
+          request_certificate(cert_config, force: force)
           renewed += 1
         else
           @logger.info("Certificate #{name} does not need renewal")
@@ -607,7 +610,8 @@ module CertManager
 
     # Request a new certificate via certbot, with staging prompt and deploy
     # @param cert_config [Hash] Certificate configuration hash
-    def request_certificate(cert_config)
+    # @param force [Boolean] If true, pass --force-renewal to certbot
+    def request_certificate(cert_config, force: false)
       domains = cert_config['domains']
       provider_name = cert_config['dns_provider']
       dns_alias = cert_config['dns_alias']
@@ -647,13 +651,14 @@ module CertManager
       raise "Unknown DNS provider: #{provider_name}" unless provider
 
       if @dry_run
-        @logger.info("[DRY RUN] Would request #{env} certificate for #{domains.join(', ')}")
+        force_label = force ? ' (forcing renewal)' : ''
+        @logger.info("[DRY RUN] Would request #{env} certificate for #{domains.join(', ')}#{force_label}")
         deploy_certificate(cert_config) if cert_config['deploy']&.any?
         return
       end
 
       # Use certbot with manual hooks
-      run_certbot_with_hooks(domains, provider, dns_alias, cert_config, env)
+      run_certbot_with_hooks(domains, provider, dns_alias, cert_config, env, force: force)
     end
 
     # Check whether a certificate PEM file exists on disk
@@ -665,20 +670,20 @@ module CertManager
       File.exist?(cert_path)
     end
 
-    # Build and execute the certbot certonly command with DNS auth/cleanup hooks
+    # Build the certbot certonly command with DNS auth/cleanup hooks
+    # Split out from run_certbot_with_hooks so the exact argv can be
+    # unit-tested without invoking certbot or the DNS provider.
     # @param domains [Array<String>] Domains to include in the certificate
     # @param provider [CertManager::DNSProviders::Base] DNS provider instance
     # @param dns_alias [String, nil] Optional DNS alias for ACME challenge records
     # @param cert_config [Hash] Certificate configuration hash
     # @param environment [Symbol] :staging or :production
-    def run_certbot_with_hooks(domains, provider, dns_alias, cert_config, environment)
-      # Ensure directories exist
-      ensure_directories_exist
-
-      # Build domain arguments
+    # @param force [Boolean] If true, add --force-renewal so certbot reissues
+    #   even if it doesn't consider the certificate due for renewal
+    # @return [Array<String>] The certbot command argv
+    def build_request_cmd(domains, provider, dns_alias, cert_config, environment, force)
       domain_args = domains.flat_map { |d| ['-d', d] }
 
-      # Build certbot command
       cmd = [
         @config.certbot_path,
         'certonly',
@@ -700,12 +705,32 @@ module CertManager
       # Reuse existing private key by default; opt out with reuse_key: false
       cmd << '--reuse-key' if cert_config.fetch('reuse_key', true)
 
+      # Force certbot to reissue even if it doesn't think the cert is due
+      # (certbot's own due-date check otherwise refuses silently)
+      cmd << '--force-renewal' if force
+
       # Set ACME server based on environment
       if environment == :staging
         cmd += ['--server', ACME_SERVERS[:staging]]
       else
         cmd += ['--server', ACME_SERVERS[:production]]
       end
+
+      cmd
+    end
+
+    # Build and execute the certbot certonly command with DNS auth/cleanup hooks
+    # @param domains [Array<String>] Domains to include in the certificate
+    # @param provider [CertManager::DNSProviders::Base] DNS provider instance
+    # @param dns_alias [String, nil] Optional DNS alias for ACME challenge records
+    # @param cert_config [Hash] Certificate configuration hash
+    # @param environment [Symbol] :staging or :production
+    # @param force [Boolean] If true, pass --force-renewal to certbot
+    def run_certbot_with_hooks(domains, provider, dns_alias, cert_config, environment, force: false)
+      # Ensure directories exist
+      ensure_directories_exist
+
+      cmd = build_request_cmd(domains, provider, dns_alias, cert_config, environment, force)
 
       # Echo command in verbose mode
       if @verbose
@@ -1489,7 +1514,7 @@ if __FILE__ == $PROGRAM_NAME
       options[:dry_run] = true
     end
 
-    opts.on('-f', '--force', 'Force renewal even if not due; with deploy, clears recorded failure state') do
+    opts.on('-f', '--force', 'With request/renew, pass --force-renewal to certbot (reissue even if not due); with deploy, clears recorded failure state') do
       options[:force] = true
     end
 
@@ -1558,7 +1583,7 @@ if __FILE__ == $PROGRAM_NAME
         skip_prompts: options[:yes],
         verbose: options[:verbose]
       )
-      manager.request(cert_name)
+      manager.request(cert_name, force: options[:force])
     rescue StandardError => e
       puts "Error: #{e.message}"
       exit 1

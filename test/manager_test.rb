@@ -508,4 +508,84 @@ class ManagerTest < Test::Unit::TestCase
 
     assert_raise(RuntimeError) { manager.renew(cert_name: 'nonexistent') }
   end
+
+  # --- build_request_cmd (the actual certbot argv) ---
+  #
+  # Regression coverage for --force not reaching certbot: --force is
+  # documented as forcing renewal, but previously only gated cert_manager's
+  # own due-date check (in renew) and was never read at all by request, and
+  # neither path ever added --force-renewal to the certbot command itself.
+  # certbot has its own independent due-date check, so without
+  # --force-renewal it refuses ("Certificate not yet due for renewal") even
+  # when cert_manager decides to proceed.
+
+  def test_build_request_cmd_omits_force_renewal_by_default
+    path = write_config(@tmpdir)
+    manager = build_manager(path)
+    cert_config = manager.send(:find_certificate, 'webserver')
+    provider = manager.instance_variable_get(:@providers)['test_cf']
+
+    cmd = manager.send(:build_request_cmd, ['www.example.com'], provider, nil, cert_config, :production, false)
+
+    assert_false cmd.include?('--force-renewal')
+  end
+
+  def test_build_request_cmd_includes_force_renewal_when_forced
+    path = write_config(@tmpdir)
+    manager = build_manager(path)
+    cert_config = manager.send(:find_certificate, 'webserver')
+    provider = manager.instance_variable_get(:@providers)['test_cf']
+
+    cmd = manager.send(:build_request_cmd, ['www.example.com'], provider, nil, cert_config, :production, true)
+
+    assert_true cmd.include?('--force-renewal')
+  end
+
+  # --- force propagation from request/renew into request_certificate ---
+  #
+  # Confirms the CLI-facing force: kwarg actually reaches request_certificate
+  # (and from there build_request_cmd, covered above) for both commands the
+  # --force flag's help text claims to affect.
+
+  def test_request_forwards_force_to_request_certificate
+    path = write_config(@tmpdir)
+    manager = build_manager(path, dry_run: false)
+
+    captured = nil
+    manager.define_singleton_method(:request_certificate) do |cert_config, force: false|
+      captured = [cert_config['name'], force]
+    end
+
+    manager.request('webserver', force: true)
+
+    assert_equal ['webserver', true], captured
+  end
+
+  def test_request_defaults_force_to_false
+    path = write_config(@tmpdir)
+    manager = build_manager(path, dry_run: false)
+
+    captured = nil
+    manager.define_singleton_method(:request_certificate) do |cert_config, force: false|
+      captured = [cert_config['name'], force]
+    end
+
+    manager.request('webserver')
+
+    assert_equal ['webserver', false], captured
+  end
+
+  def test_renew_forwards_force_to_request_certificate
+    path = write_config(@tmpdir)
+    manager = build_manager(path, dry_run: false)
+
+    captured = []
+    manager.define_singleton_method(:request_certificate) do |cert_config, force: false|
+      captured << [cert_config['name'], force]
+    end
+
+    manager.renew(cert_name: 'webserver', force: true)
+
+    assert_equal [['webserver', true]], captured
+  end
 end

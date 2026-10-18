@@ -108,6 +108,15 @@ Once staging succeeds, request the real certificate:
 ./cert_manager.rb --production request myserver
 ```
 
+If certbot refuses with "Certificate not yet due for renewal; no action
+taken" (e.g. you already have a valid cert under this name for the same
+domains, from a staging test or an earlier run), add `--force` to make
+certbot reissue anyway:
+
+```bash
+./cert_manager.rb --force --production request myserver
+```
+
 ### Other commands
 
 ```bash
@@ -323,7 +332,9 @@ Options:
   -s, --staging        Use staging environment (test certificates)
   -p, --production     Use production environment (real certificates)
   -n, --dry-run        Preview without making changes
-  -f, --force          Force renewal even if not due
+  -f, --force          With request/renew, pass --force-renewal to certbot
+                       (reissue even if not due); with deploy, clears
+                       recorded failure state
   -r, --reason REASON  Revocation reason (for revoke command)
   -q, --quiet          Quiet mode (errors only)
   -y, --yes            Skip confirmation prompts

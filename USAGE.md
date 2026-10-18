@@ -48,6 +48,15 @@ Once staging succeeds:
 ./cert_manager.rb --production request mysite
 ```
 
+If certbot refuses with "Certificate not yet due for renewal; no action
+taken" — for example because a valid cert already exists under this name
+for the same domains (from the staging test above, if it reused the same
+cert name) — add `--force` to make certbot reissue anyway:
+
+```bash
+./cert_manager.rb --force --production request mysite
+```
+
 ### 6. Verify the result
 
 ```bash
