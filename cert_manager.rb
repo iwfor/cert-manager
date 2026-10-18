@@ -15,6 +15,7 @@ require 'digest'
 
 require_relative 'lib/dns_providers'
 require_relative 'lib/file_permissions'
+require_relative 'lib/config'
 
 module CertManager
   VERSION = '1.0.0'
@@ -24,196 +25,6 @@ module CertManager
     production: 'https://acme-v02.api.letsencrypt.org/directory',
     staging: 'https://acme-staging-v02.api.letsencrypt.org/directory'
   }.freeze
-
-  # Configuration loader and validator
-  class Config
-    DEFAULT_CONFIG_PATH = File.expand_path('~/.config/cert_manager/config.yml')
-
-    attr_reader :dns_providers, :certificates, :certbot_path,
-                :config_dir, :work_dir, :logs_dir,
-                :log_level, :propagation_wait, :email, :default_environment
-
-    # Certificates are stored in config_dir/live
-    def cert_dir
-      File.join(@config_dir, 'live')
-    end
-
-    # @param path [String, nil] Path to config file, defaults to DEFAULT_CONFIG_PATH
-    def initialize(path = nil)
-      @path = path || DEFAULT_CONFIG_PATH
-      load_config
-    end
-
-    private
-
-    # Load and parse the YAML configuration file
-    # @raise [ConfigError] If the file is missing or invalid
-    def load_config
-      unless File.exist?(@path)
-        raise ConfigError, "Configuration file not found: #{@path}\n" \
-                           "Run with --init to create a sample configuration."
-      end
-
-      FilePermissions.check(@path)
-
-      config = YAML.safe_load(File.read(@path), permitted_classes: [Symbol])
-
-      unless config.is_a?(Hash)
-        raise ConfigError, "Configuration file is empty or invalid: #{@path}"
-      end
-
-      @dns_providers = config['dns_providers'] || {}
-      @certificates = config['certificates'] || []
-      @certbot_path = config['certbot_path'] || 'certbot'
-
-      # Certbot directory configuration (defaults to ~/.local/share/certbot)
-      default_base = File.expand_path('~/.local/share/certbot')
-      @config_dir = File.expand_path(config['config_dir'] || default_base)
-      @work_dir = File.expand_path(config['work_dir'] || File.join(default_base, 'work'))
-      @logs_dir = File.expand_path(config['logs_dir'] || File.join(default_base, 'logs'))
-
-      @log_level = config['log_level'] || 'INFO'
-      @propagation_wait = config['propagation_wait'] || 60
-      @email = config['email']
-      @default_environment = (config['environment'] || 'production').to_sym
-
-      validate_config
-    end
-
-    # Validate that configured certificates reference valid providers and domains
-    # @raise [ConfigError] If validation fails
-    def validate_config
-      if @certificates.any? && @dns_providers.empty?
-        raise ConfigError, "No DNS providers configured"
-      end
-
-      @dns_providers.each do |name, provider_config|
-        unless provider_config.is_a?(Hash)
-          raise ConfigError, "DNS provider '#{name}' has no configuration (expected a mapping with 'type' and credentials)"
-        end
-        unless provider_config['type']
-          raise ConfigError, "DNS provider '#{name}' is missing required 'type' field"
-        end
-      end
-
-      @certificates.each_with_index do |cert, i|
-        unless cert.is_a?(Hash)
-          raise ConfigError, "Certificate ##{i + 1} is not a valid mapping (got #{cert.inspect})"
-        end
-
-        cert_label = "Certificate ##{i + 1}#{" ('#{cert['name']}')" if cert['name']}"
-
-        unless cert['domains'].is_a?(Array) && cert['domains'].any?
-          raise ConfigError, "#{cert_label} is missing a 'domains' list"
-        end
-
-        cert['domains'].each_with_index do |domain, j|
-          unless domain.is_a?(String) && !domain.strip.empty?
-            raise ConfigError, "#{cert_label}: domain ##{j + 1} is not a valid string (got #{domain.inspect})"
-          end
-        end
-
-        provider = cert['dns_provider']
-        unless provider.is_a?(String) && !provider.strip.empty?
-          raise ConfigError, "#{cert_label} is missing required 'dns_provider' field"
-        end
-        unless @dns_providers.key?(provider)
-          raise ConfigError, "#{cert_label} references unknown dns_provider: '#{provider}' (configured: #{@dns_providers.keys.join(', ')})"
-        end
-
-        if cert['environment'] && !%w[staging production].include?(cert['environment'].to_s)
-          raise ConfigError, "#{cert_label}: invalid environment '#{cert['environment']}' (must be 'staging' or 'production')"
-        end
-
-        if cert['dns_alias'] && !(cert['dns_alias'].is_a?(String) && !cert['dns_alias'].strip.empty?)
-          raise ConfigError, "#{cert_label}: 'dns_alias' must be a non-empty string"
-        end
-
-        validate_deploy_config(cert['name'] || cert['domains'].first, cert['deploy']) if cert['deploy']
-      end
-    end
-
-    SUPPORTED_DEPLOY_SERVICES = %w[nginx apache copy].freeze
-    SUPPORTED_DEPLOY_ACTIONS = %w[reload restart].freeze
-
-    DEFAULT_SERVICE_NAMES = {
-      'nginx' => 'nginx',
-      'apache' => 'apache2'
-    }.freeze
-
-    # Validate deploy target configuration for a certificate
-    # @param cert_name [String] Certificate name for error messages
-    # @param deploy_targets [Array<Hash>] List of deploy target configurations
-    # @raise [ConfigError] If any target is misconfigured
-    def validate_deploy_config(cert_name, deploy_targets)
-      unless deploy_targets.is_a?(Array)
-        raise ConfigError, "Certificate '#{cert_name}': deploy must be a list of targets"
-      end
-
-      deploy_targets.each_with_index do |target, i|
-        unless target.is_a?(Hash)
-          raise ConfigError, "Certificate '#{cert_name}': deploy target ##{i + 1} is not a valid mapping (got #{target.inspect})"
-        end
-
-        tgt = "Certificate '#{cert_name}': deploy target ##{i + 1}"
-
-        if target['local']
-          %w[user host port].each do |field|
-            if target.key?(field)
-              raise ConfigError, "#{tgt}: '#{field}' is not valid for local deploy targets"
-            end
-          end
-
-          %w[service path].each do |field|
-            unless target[field].is_a?(String) && !target[field].strip.empty?
-              raise ConfigError, "#{tgt} missing required field '#{field}'"
-            end
-          end
-        else
-          %w[user host service path].each do |field|
-            unless target[field].is_a?(String) && !target[field].strip.empty?
-              raise ConfigError, "#{tgt} missing required field '#{field}'"
-            end
-          end
-
-          if target['port'] && !target['port'].is_a?(Integer)
-            raise ConfigError, "#{tgt} 'port' must be an integer (got #{target['port'].inspect})"
-          end
-        end
-
-        unless SUPPORTED_DEPLOY_SERVICES.include?(target['service'])
-          raise ConfigError, "#{tgt} unsupported service '#{target['service']}' (supported: #{SUPPORTED_DEPLOY_SERVICES.join(', ')})"
-        end
-
-        unless target['path'].to_s.start_with?('/')
-          raise ConfigError, "#{tgt} 'path' must be an absolute path (got '#{target['path']}')"
-        end
-
-        if target['key_path'] && !(target['key_path'].is_a?(String) && target['key_path'].start_with?('/'))
-          raise ConfigError, "#{tgt} 'key_path' must be an absolute path (got '#{target['key_path']}')"
-        end
-
-        if target['action'] && !SUPPORTED_DEPLOY_ACTIONS.include?(target['action'])
-          raise ConfigError, "#{tgt} unsupported action '#{target['action']}' (supported: #{SUPPORTED_DEPLOY_ACTIONS.join(', ')})"
-        end
-
-        if target.key?('sudo') && ![true, false].include?(target['sudo'])
-          raise ConfigError, "#{tgt} 'sudo' must be true or false (got #{target['sudo'].inspect})"
-        end
-
-        if target.key?('append_key') && ![true, false].include?(target['append_key'])
-          raise ConfigError, "#{tgt} 'append_key' must be true or false (got #{target['append_key'].inspect})"
-        end
-
-        if target['custom_command'] && target['service'] != 'copy'
-          raise ConfigError, "#{tgt} custom_command is only supported with service 'copy'"
-        end
-      end
-    end
-
-  end
-
-  class ConfigError < StandardError; end
 
   # Main certificate manager
   class Manager
@@ -408,7 +219,7 @@ module CertManager
       raise "Certificate '#{cert_name}' not found in configuration" unless cert_config
 
       domains = cert_config['domains']
-      provider_name = cert_config['dns_provider']
+      provider_name = @config.provider_name_for(cert_config)
       provider = @providers[provider_name]
 
       raise "Unknown DNS provider: #{provider_name}" unless provider
@@ -589,8 +400,8 @@ module CertManager
     # @return [String] Ruby source code fragment
     def hook_script_preamble
       <<~'RUBY'
-        config = YAML.safe_load(File.read(ENV["CERT_MANAGER_CONFIG"]))
-        provider_config = config["dns_providers"][ENV["CERT_MANAGER_PROVIDER"]]
+        config = CertManager::Config.new(ENV["CERT_MANAGER_CONFIG"], warn_legacy: false)
+        provider_config = config.dns_providers[ENV["CERT_MANAGER_PROVIDER"]]
         provider = CertManager::DNSProviders.create(
           provider_config["type"],
           ENV["CERT_MANAGER_PROVIDER"],
@@ -613,7 +424,7 @@ module CertManager
     # @param force [Boolean] If true, pass --force-renewal to certbot
     def request_certificate(cert_config, force: false)
       domains = cert_config['domains']
-      provider_name = cert_config['dns_provider']
+      provider_name = @config.provider_name_for(cert_config)
       dns_alias = cert_config['dns_alias']
       env = effective_environment(cert_config)
       cert_name = cert_name_for(cert_config)
@@ -742,7 +553,7 @@ module CertManager
       # Set environment for hooks
       env = {
         'CERT_MANAGER_PROVIDER' => provider.name,
-        'CERT_MANAGER_CONFIG' => @config.instance_variable_get(:@path),
+        'CERT_MANAGER_CONFIG' => @config.path,
         'CERT_MANAGER_PROPAGATION_WAIT' => @config.propagation_wait.to_s
       }
       env['CERT_MANAGER_DNS_ALIAS'] = dns_alias if dns_alias
@@ -798,7 +609,7 @@ module CertManager
     # @param dns_alias [String, nil] Optional DNS alias for challenge records
     # @return [String] Path to the generated temporary script
     def auth_hook_script(provider, dns_alias)
-      lib_path = File.expand_path('lib/dns_providers', __dir__)
+      lib_path = File.expand_path('lib/config', __dir__)
       preamble = hook_script_preamble
 
       script = <<~RUBY
@@ -837,7 +648,7 @@ module CertManager
     # @param dns_alias [String, nil] Optional DNS alias for challenge records
     # @return [String] Path to the generated temporary script
     def cleanup_hook_script(provider, dns_alias)
-      lib_path = File.expand_path('lib/dns_providers', __dir__)
+      lib_path = File.expand_path('lib/config', __dir__)
       preamble = hook_script_preamble
 
       script = <<~RUBY
@@ -1321,7 +1132,7 @@ module CertManager
 
       puts "\n#{cert_name}:"
       puts "  Domains: #{cert_config['domains'].join(', ')}"
-      puts "  DNS Provider: #{cert_config['dns_provider']}"
+      puts "  DNS Provider: #{@config.provider_name_for(cert_config)}"
       puts "  DNS Alias: #{cert_config['dns_alias'] || 'none'}"
       puts "  Environment: #{env.to_s.upcase}"
 
@@ -1559,7 +1370,7 @@ if __FILE__ == $PROGRAM_NAME
 
   case command
   when 'init'
-    config_path = options[:config] || CertManager::Config::DEFAULT_CONFIG_PATH
+    config_path = options[:config] || CertManager::Config::LEGACY_CONFIG_PATH
     if File.exist?(config_path)
       print "Configuration file already exists. Overwrite? [y/N] "
       exit unless $stdin.gets.strip.downcase == 'y'
