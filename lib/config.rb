@@ -44,6 +44,15 @@ module CertManager
       DEFAULT_CONFIG_PATH
     end
 
+    # Where commands that create a v2 config (init, convert-config) should write:
+    # explicit path, $CERT_MANAGER_CONFIG, then the default v2 path.
+    def self.default_write_path(explicit = nil)
+      return File.expand_path(explicit) if explicit
+      return File.expand_path(ENV[ENV_VAR]) if ENV[ENV_VAR] && !ENV[ENV_VAR].empty?
+
+      DEFAULT_CONFIG_PATH
+    end
+
     # Normalize a zone name (case, trailing dot) and validate its shape
     # @return [String] normalized zone
     # @raise [ConfigError] if it is not a plausible DNS zone
