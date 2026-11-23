@@ -10,7 +10,6 @@ cert-manager.key
 *.rbc
 .bundle/
 vendor/bundle/
-Gemfile.lock
 
 # Temporary files
 *.log
