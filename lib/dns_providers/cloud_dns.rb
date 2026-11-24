@@ -242,7 +242,7 @@ module CertManager
 
         service
       rescue LoadError
-        raise DNSProviderError, "Google Cloud DNS SDK not found. Install with: gem install google-apis-dns_v1 googleauth"
+        raise DNSProviderError, "Google Cloud DNS SDK not found. Install with: bundle config set --local with cloud_dns && bundle install"
       end
 
       def get_existing_record(fqdn)

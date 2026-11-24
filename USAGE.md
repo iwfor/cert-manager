@@ -83,8 +83,8 @@ Each provider is added with `add-provider NAME --type TYPE`. Secrets are asked f
 | -------- | -------- | ---------------- | ----------------------------- | ----- |
 | Cloudflare | `cloudflare` | `api_token` | `zone_id` (optional; pins the provider to one zone) | Token from https://dash.cloudflare.com/profile/api-tokens with **Zone.DNS Edit** |
 | Dreamhost | `dreamhost` | `api_key` | | Key from https://panel.dreamhost.com/index.cgi?tree=home.api with **dns-\*** permissions |
-| AWS Route 53 | `route53` | none (`secret_access_key` optional) | `hosted_zone_id` (required), `access_key_id`, `region` | `gem install aws-sdk-route53`; without keys the SDK credential chain is used. Serves one zone. Add the optional secret with `update-provider-key NAME --credential secret_access_key` |
-| GCP Cloud DNS | `cloud_dns` | none | `project_id`, `managed_zone` (required), `credentials_file` | `gem install google-apis-dns_v1 googleauth`; uses Application Default Credentials without `credentials_file`. Serves one zone |
+| AWS Route 53 | `route53` | none (`secret_access_key` optional) | `hosted_zone_id` (required), `access_key_id`, `region` | `bundle config set --local with route53 && bundle install`; without keys the SDK credential chain is used. Serves one zone. Add the optional secret with `update-provider-key NAME --credential secret_access_key` |
+| GCP Cloud DNS | `cloud_dns` | none | `project_id`, `managed_zone` (required), `credentials_file` | `bundle config set --local with cloud_dns && bundle install`; uses Application Default Credentials without `credentials_file`. Serves one zone |
 | DNS Made Easy | `dnsmadeeasy` | `api_key`, then `secret_key` | `sandbox=true` | Credentials from https://dnsmadeeasy.com/ account settings |
 | DigitalOcean | `digitalocean` | `api_token` | | Token with **read/write** scope: https://cloud.digitalocean.com/account/api/tokens |
 | Linode (Akamai) | `linode` | `api_token` | | Token with **Domains: Read/Write**: https://cloud.linode.com/profile/tokens |

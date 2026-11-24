@@ -227,7 +227,7 @@ module CertManager
 
         Aws::Route53::Client.new(client_options)
       rescue LoadError
-        raise DNSProviderError, "AWS SDK not found. Install with: gem install aws-sdk-route53"
+        raise DNSProviderError, "AWS SDK not found. Install with: bundle config set --local with route53 && bundle install"
       end
 
       def wait_for_change(change_id)
