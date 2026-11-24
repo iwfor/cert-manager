@@ -24,26 +24,36 @@ A Ruby tool for managing Let's Encrypt certificates for internal hosts using DNS
 
 ## Requirements
 
-- Ruby 2.7+
+- Ruby 3.3+ (a [supported](https://www.ruby-lang.org/en/downloads/branches/) release)
+- [Bundler](https://bundler.io/) (included with Ruby)
 - [Certbot](https://certbot.eff.org/) installed and in PATH
 - API credentials for your DNS provider
 
 ## Installation
 
 1. Clone or copy files to your preferred location
-2. Make the script executable:
+2. Install the gem dependencies:
+   ```bash
+   bundle install
+   ```
+   The AWS Route 53 and GCP Cloud DNS SDKs are optional and skipped by default. To include them,
+   run this before `bundle install` (list only the groups you need):
+   ```bash
+   bundle config set --local with route53 cloud_dns
+   ```
+3. Make the script executable:
    ```bash
    chmod +x cert_manager.rb
    ```
-3. Create the configuration and encryption key:
+4. Create the configuration and encryption key:
    ```bash
    ./cert_manager.rb init --email admin@example.com
    ```
-4. Add your DNS provider (the API key is asked for with a hidden prompt and stored encrypted):
+5. Add your DNS provider (the API key is asked for with a hidden prompt and stored encrypted):
    ```bash
    ./cert_manager.rb add-provider cloudflare --type cloudflare --zone example.com
    ```
-5. Add certificates to `~/.config/cert_manager/config.v2.yml`, then enable
+6. Add certificates to `~/.config/cert_manager/config.v2.yml`, then enable
    [shell completions](#shell-completions).
 
 Upgrading from the old `config.yml`? See [Migrating from v1](#migrating-from-v1).
@@ -538,7 +548,7 @@ Secrets (API keys and tokens) are asked for with a hidden prompt when you add a 
 
 ### AWS Route 53
 
-1. Install the AWS SDK: `gem install aws-sdk-route53`
+1. Install the AWS SDK: `bundle config set --local with route53 && bundle install`
 2. Get your Hosted Zone ID from the Route 53 console
 3. Create an IAM user/role with `route53:ChangeResourceRecordSets` and `route53:ListResourceRecordSets` permissions
 4. Add the provider:
@@ -559,7 +569,7 @@ If you don't provide credentials, the AWS SDK will use the standard credential c
 
 ### GCP Cloud DNS
 
-1. Install the Google Cloud SDK: `gem install google-apis-dns_v1 googleauth`
+1. Install the Google Cloud SDK: `bundle config set --local with cloud_dns && bundle install`
 2. Create a Cloud DNS managed zone or note your existing zone name
 3. Create a service account with **DNS Administrator** role
 4. Add the provider:

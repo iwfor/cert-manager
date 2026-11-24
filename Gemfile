@@ -2,7 +2,7 @@
 
 source 'https://rubygems.org'
 
-ruby file: '.ruby-version'
+ruby '>= 3.3'
 
 # Bundled (not default) gems since Ruby 3.x; must be declared to load under Bundler
 gem 'base64'  # secret_store
